@@ -38,8 +38,7 @@
         "WRITE_EXTERNAL_STORAGE",
         "INTERNET",
         "ACCESS_NETWORK_STATE"
-      ],
-      "usesCleartextTraffic": true
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
