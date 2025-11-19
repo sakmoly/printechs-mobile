@@ -1,4 +1,4 @@
-# ERPNext Mobile App
+# Printechs ERP Application
 
 A beautiful React Native mobile application for ERPNext with Analytics Dashboard, Employee Management, and Approval Workflows.
 

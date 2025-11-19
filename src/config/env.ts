@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  ERP_BASE_URL: z.string().url(),
+  ERP_BASE_URL: z.string().optional(), // Optional - will be set from serverConfig
   BUILD_VARIANT: z.enum(["dev", "uat", "prod"]).default("dev"),
   API_KEY: z.string().optional(),
   API_SECRET: z.string().optional(),
@@ -14,9 +14,10 @@ export type Env = z.infer<typeof envSchema>;
 // For development, you can hardcode values here
 // In production, use expo-constants to read from app.config.js
 const getRawEnv = (): Record<string, string | undefined> => {
-  // TODO: Replace with your ERPNext instance URL and API credentials
+  // Base URL is now dynamically loaded from server config in auth store
+  // No hardcoded URLs - all APIs use serverConfig.serverUrl from settings
   return {
-    ERP_BASE_URL: "https://printechs.com",
+    ERP_BASE_URL: "", // Empty by default - will be set from serverConfig
     BUILD_VARIANT: "dev",
 
     // API Authentication - Update these with your actual API credentials

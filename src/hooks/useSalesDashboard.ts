@@ -70,22 +70,25 @@ export function useSalesDashboard(params: SalesDashboardParams = {}) {
                 };
               })()
             : null),
-        // Map territory data from charts
+        // Map territory data - prioritize sales_dashboard data over charts data
         territory:
+          salesData.territory ||
           chartsData?.sales_by_territory?.map((item) => ({
             territory: item.territory,
             total_sales: item.value,
             invoice_count: item.invoice_count || 0, // Use available data or default to 0
-          })) || salesData.territory,
-        // Map division data from charts (if available)
+          })) ||
+          [],
+        // Map division data - prioritize sales_dashboard data over charts data
         division:
-          chartsData?.sales_by_division?.length > 0
+          salesData.division ||
+          (chartsData?.sales_by_division?.length > 0
             ? chartsData.sales_by_division.map((item) => ({
                 division: item.division || item.name,
                 total_sales: item.value,
                 margin_percentage: item.percentage || 0,
               }))
-            : salesData.division || [], // Fallback to empty array if no data
+            : []), // Fallback to empty array if no data
         // Map monthly trend from daily sales data - aggregate by month
         monthly_trend: chartsData?.sales_daily?.length
           ? (() => {

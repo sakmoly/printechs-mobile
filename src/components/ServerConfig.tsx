@@ -20,12 +20,93 @@ interface ServerConfigProps {
 export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
   const { serverConfig, updateServerConfig } = useAuthStore();
   const [serverUrl, setServerUrl] = useState(serverConfig.serverUrl || "");
+  const [clientId, setClientId] = useState(
+    serverConfig.clientId || "55d4241f3a"
+  );
+  const [isFetchingClientId, setIsFetchingClientId] = useState(false);
 
   useEffect(() => {
     setServerUrl(serverConfig.serverUrl || "");
-  }, [serverConfig.serverUrl]);
+    setClientId(serverConfig.clientId || "55d4241f3a");
+  }, [serverConfig.serverUrl, serverConfig.clientId]);
 
-  const handleSave = () => {
+  // Auto-fetch client_id when server URL changes (debounced)
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (serverUrl && serverUrl !== serverConfig.serverUrl) {
+        fetchClientIdFromServer(serverUrl);
+      }
+    }, 1000); // Wait 1 second after user stops typing
+
+    return () => clearTimeout(timeoutId);
+  }, [serverUrl]);
+
+  // Clear client_id when server URL changes significantly
+  useEffect(() => {
+    if (
+      serverUrl &&
+      serverConfig.serverUrl &&
+      serverUrl !== serverConfig.serverUrl
+    ) {
+      // If the domain changed (not just a small modification), reset client_id
+      const currentDomain = new URL(serverConfig.serverUrl || serverUrl)
+        .hostname;
+      const newDomain = new URL(serverUrl).hostname;
+
+      if (currentDomain !== newDomain) {
+        console.log("🔄 Server domain changed, resetting client_id");
+        setClientId("55d4241f3a"); // Reset to default
+      }
+    }
+  }, [serverUrl]);
+
+  // Auto-fetch client_id from server when server URL is set
+  const fetchClientIdFromServer = async (baseUrl: string) => {
+    if (!baseUrl) return;
+
+    console.log("🔄 Fetching client_id from:", baseUrl);
+    setIsFetchingClientId(true);
+    try {
+      // Try to fetch client_id from the server configuration API
+      const axios = (await import("axios")).default;
+      const fetchUrl = `${baseUrl}/api/method/printechs_utility.config.get_client_id`;
+      console.log("📡 Calling:", fetchUrl);
+
+      const response = await axios.get(fetchUrl);
+
+      const fetchedClientId = response.data?.message?.client_id;
+      if (fetchedClientId) {
+        setClientId(fetchedClientId);
+        console.log("✅ Auto-fetched client_id from server:", fetchedClientId);
+      } else {
+        console.log("⚠️ No client_id in response:", response.data);
+      }
+    } catch (error: any) {
+      // API might not exist on all servers (417, 404, etc.)
+      // This is expected - just use the default client_id
+      if (error.response?.status === 417 || error.response?.status === 404) {
+        console.log(
+          "ℹ️ Client ID API not available on this server, using default"
+        );
+
+        // If this is the demo server, use the known client_id
+        if (baseUrl.includes("demo.printechs.com")) {
+          console.log(
+            "🎯 Detected demo server, using known client_id: 1f2f5e62d1"
+          );
+          setClientId("1f2f5e62d1");
+        }
+      } else {
+        console.log("⚠️ Could not fetch client_id from server:", error.message);
+        console.log("⚠️ Server URL was:", baseUrl);
+      }
+      // Keep the default client_id
+    } finally {
+      setIsFetchingClientId(false);
+    }
+  };
+
+  const handleSave = async () => {
     if (!serverUrl.trim()) {
       Alert.alert("Error", "Please enter a valid server URL");
       return;
@@ -44,11 +125,15 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
       return;
     }
 
+    // Try to fetch client_id from server
+    await fetchClientIdFromServer(trimmedUrl);
+
     updateServerConfig({
       serverUrl: trimmedUrl,
       hostname: "",
       port: 0,
       isHttps: trimmedUrl.startsWith("https://"),
+      clientId: clientId.trim() || "55d4241f3a", // Default fallback
     });
 
     Alert.alert("Success", "Server configuration saved successfully!");
@@ -94,6 +179,47 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
             <Text style={styles.helpText}>
               Examples:{"\n"}• https://erp.example.com{"\n"}•
               https://erp.example.com:443{"\n"}• http://192.168.1.100:8000
+            </Text>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>Client ID (Optional)</Text>
+              {isFetchingClientId && (
+                <Text style={styles.fetchingText}>
+                  🔄 Fetching from server...
+                </Text>
+              )}
+            </View>
+            <View style={styles.clientIdRow}>
+              <TextInput
+                style={[styles.input, styles.clientIdInput]}
+                value={clientId}
+                onChangeText={setClientId}
+                placeholder="55d4241f3a"
+                placeholderTextColor="#9ca3af"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!isFetchingClientId}
+              />
+              <TouchableOpacity
+                style={styles.refreshButton}
+                onPress={() =>
+                  fetchClientIdFromServer(serverUrl || serverConfig.serverUrl)
+                }
+                disabled={isFetchingClientId || !serverUrl}
+              >
+                <Ionicons
+                  name="refresh"
+                  size={20}
+                  color={
+                    isFetchingClientId || !serverUrl ? "#9ca3af" : "#667eea"
+                  }
+                />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.helpText}>
+              Will auto-fetch from server, or use default: 55d4241f3a
             </Text>
           </View>
 
@@ -162,11 +288,26 @@ const styles = StyleSheet.create({
   inputGroup: {
     marginBottom: 20,
   },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
   label: {
     fontSize: 15,
     fontWeight: "600",
     color: "#374151",
-    marginBottom: 8,
+  },
+  fetchingText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#667eea",
+  },
+  clientIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   input: {
     borderWidth: 1,
@@ -176,6 +317,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     backgroundColor: "#f9fafb",
     color: "#1f2937",
+  },
+  clientIdInput: {
+    flex: 1,
+  },
+  refreshButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "#f3f4f6",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
   },
   helpText: {
     fontSize: 12,

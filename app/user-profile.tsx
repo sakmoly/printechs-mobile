@@ -17,54 +17,63 @@ import { Ionicons } from "@expo/vector-icons";
 import QRCode from "react-native-qrcode-svg";
 import { useAuthStore } from "../src/store/auth";
 import {
-  useUserInfo,
-  useEmployeeInfo,
+  useUserProfile,
   useProfileQRData,
 } from "../src/hooks/useOptimizedApis";
+import { Image as RNImage } from "react-native";
 
 const { width } = Dimensions.get("window");
 
 export default function UserProfileScreen() {
-  const { user, logout } = useAuthStore();
+  const { user, logout, isAuthenticated, serverConfig } = useAuthStore();
   const {
-    data: userInfo,
-    isLoading: userLoading,
-    error: userError,
-  } = useUserInfo();
-  const {
-    data: employeeInfo,
-    isLoading: employeeLoading,
-    error: employeeError,
-  } = useEmployeeInfo();
+    data: userProfile,
+    isLoading: profileLoading,
+    error: profileError,
+  } = useUserProfile();
   const {
     data: qrData,
     isLoading: qrLoading,
     error: qrError,
   } = useProfileQRData();
 
-  const loading = userLoading || employeeLoading || qrLoading;
-  const hasError = userError || employeeError || qrError;
+  const loading = profileLoading || qrLoading;
+  const hasError = profileError || qrError;
+
+  // Redirect to login if not authenticated
+  React.useEffect(() => {
+    if (!isAuthenticated || !user) {
+      console.log("User not authenticated, redirecting to login");
+      router.replace("/(auth)/login");
+    }
+  }, [isAuthenticated, user]);
+
+  // Show loading while checking authentication
+  if (!isAuthenticated || !user) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#667eea" />
+        <Text style={styles.loadingText}>Loading profile...</Text>
+      </View>
+    );
+  }
 
   // Debug: Log user data and API responses
   useEffect(() => {
     console.log("=== USER PROFILE DEBUG ===");
     console.log("User:", JSON.stringify(user, null, 2));
-    console.log("UserInfo:", JSON.stringify(userInfo, null, 2));
-    console.log("EmployeeInfo:", JSON.stringify(employeeInfo, null, 2));
+    console.log("UserProfile:", JSON.stringify(userProfile, null, 2));
     console.log("QRData:", qrData);
-    console.log("Loading:", { userLoading, employeeLoading, qrLoading });
-    console.log("Errors:", { userError, employeeError, qrError });
+    console.log("Loading:", { profileLoading, qrLoading });
+    console.log("Errors:", { profileError, qrError });
     console.log("=========================");
   }, [
     user,
-    userInfo,
-    employeeInfo,
+    userProfile,
     qrData,
-    userLoading,
-    employeeLoading,
+    profileLoading,
     qrLoading,
-    userError,
-    employeeError,
+    profileError,
     qrError,
   ]);
 
@@ -90,10 +99,7 @@ export default function UserProfileScreen() {
         <Ionicons name="warning-outline" size={64} color="#ef4444" />
         <Text style={styles.errorText}>Failed to load profile data</Text>
         <Text style={styles.errorSubtext}>
-          {userError?.message ||
-            employeeError?.message ||
-            qrError?.message ||
-            "Unknown error"}
+          {profileError?.message || qrError?.message || "Unknown error"}
         </Text>
         <TouchableOpacity
           style={styles.backButton}
@@ -107,30 +113,20 @@ export default function UserProfileScreen() {
 
   // Use API data if available, otherwise fall back to user data
   // Add safety checks to prevent undefined errors
-  const displayData = employeeInfo || userInfo || user;
+  const displayData = userProfile || user;
   const displayName =
-    employeeInfo?.employee_name ||
-    userInfo?.full_name ||
+    userProfile?.employee_name ||
     user?.full_name ||
     user?.username ||
     "Unknown User";
-  const displayEmail =
-    employeeInfo?.company_email || userInfo?.email || user?.email || "";
-  const displayPhone =
-    employeeInfo?.cell_number || userInfo?.mobile_no || user?.mobile_no || "";
+  const displayEmail = user?.email || userProfile?.company_email || "";
+  const displayPhone = userProfile?.cell_number || user?.mobile_no || "";
   const displayDesignation =
-    employeeInfo?.designation ||
-    userInfo?.designation ||
-    user?.designation ||
-    "";
-  const displayDepartment =
-    employeeInfo?.department || userInfo?.department || user?.department || "";
-  const displayCompany =
-    employeeInfo?.company || userInfo?.company || user?.company || "Printechs";
-  const displayImage =
-    employeeInfo?.photo_url || userInfo?.image_url || user?.image || "";
-  const displayBranch = employeeInfo?.branch || "";
-  const displayAddress = employeeInfo?.current_address || "";
+    userProfile?.designation || user?.designation || "";
+  const displayCompany = userProfile?.company || user?.company || "Printechs";
+  const displayImage = userProfile?.image_url || user?.image || "";
+  const displayBranch = userProfile?.branch || "";
+  const displayAddress = userProfile?.current_address || "";
 
   // Generate vCard data for QR code
   const generateVCard = () => {
@@ -220,17 +216,10 @@ export default function UserProfileScreen() {
                 <View style={styles.photoPlaceholder}>
                   <ActivityIndicator size="large" color="#ffffff" />
                 </View>
-              ) : displayImage ? (
-                <Image
-                  source={{ uri: displayImage }}
-                  style={styles.profilePhoto}
-                />
               ) : (
-                <View style={styles.photoPlaceholder}>
-                  <Text style={styles.photoInitials}>
-                    {displayName?.charAt(0) || "U"}
-                  </Text>
-                </View>
+                <ProfilePhoto
+                  imageUrl={resolveImageUrl(displayImage, serverConfig?.serverUrl)}
+                />
               )}
               <View style={styles.onlineIndicator} />
             </View>
@@ -240,9 +229,6 @@ export default function UserProfileScreen() {
               <Text style={styles.userName}>{displayName}</Text>
               {displayDesignation && (
                 <Text style={styles.userDesignation}>{displayDesignation}</Text>
-              )}
-              {displayDepartment && (
-                <Text style={styles.userDepartment}>{displayDepartment}</Text>
               )}
               <Text style={styles.userCompany}>{displayCompany}</Text>
             </View>
@@ -339,14 +325,6 @@ export default function UserProfileScreen() {
             </View>
           )}
 
-          {displayDepartment && (
-            <View style={styles.contactItem}>
-              <Ionicons name="business-outline" size={20} color="#667eea" />
-              <Text style={styles.contactLabel}>Department</Text>
-              <Text style={styles.contactValue}>{displayDepartment}</Text>
-            </View>
-          )}
-
           {displayDesignation && (
             <View style={styles.contactItem}>
               <Ionicons name="briefcase-outline" size={20} color="#667eea" />
@@ -392,6 +370,36 @@ export default function UserProfileScreen() {
       </ScrollView>
     </View>
   );
+}
+
+function ProfilePhoto({ imageUrl }: { imageUrl?: string | null }) {
+  const [failed, setFailed] = React.useState(false);
+
+  if (imageUrl && !failed) {
+    return (
+      <Image
+        source={{ uri: imageUrl }}
+        style={styles.profilePhoto}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  // Fallback to local Printechs logo asset
+  return (
+    <Image
+      source={require("../assets/icon.png")}
+      style={styles.profilePhoto}
+      resizeMode="cover"
+    />
+  );
+}
+
+function resolveImageUrl(url?: string | null, baseUrl?: string | null) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("/") && baseUrl) return `${baseUrl}${url}`;
+  return url;
 }
 
 const styles = StyleSheet.create({
@@ -486,12 +494,6 @@ const styles = StyleSheet.create({
   userDesignation: {
     fontSize: 18,
     color: "rgba(255, 255, 255, 0.9)",
-    marginBottom: 4,
-    textAlign: "center",
-  },
-  userDepartment: {
-    fontSize: 14,
-    color: "rgba(255, 255, 255, 0.8)",
     marginBottom: 4,
     textAlign: "center",
   },
@@ -658,5 +660,18 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "600",
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f9fafb",
+    padding: 32,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: "#6b7280",
+    fontWeight: "500",
   },
 });

@@ -12,6 +12,7 @@ import {
   ScrollView,
   Clipboard,
   Linking,
+  Image,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
@@ -20,6 +21,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { ServerConfig } from "../../src/components/ServerConfig";
 import { OTPInput } from "../../src/components/OTPInput";
 import { oauthApi } from "../../src/api/oauth";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type LoginStep = "email" | "otp";
 
@@ -37,8 +39,26 @@ export default function LoginScreen() {
 
   // Load server config on component mount
   useEffect(() => {
-    loadServerConfig();
+    loadServerConfig().catch((error) => {
+      console.error("Failed to load server config:", error);
+    });
   }, []);
+
+  // Prefill last used email (per server) on mount and when server config loads
+  useEffect(() => {
+    (async () => {
+      try {
+        const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
+        const saved = await AsyncStorage.getItem(key);
+        if (saved) {
+          setEmail(saved);
+        }
+      } catch (e) {
+        // non-fatal
+        console.warn("Failed to read lastUsername:", e);
+      }
+    })();
+  }, [serverConfig?.serverUrl]);
 
   // Monitor clipboard for OTP when on OTP step
   useEffect(() => {
@@ -119,6 +139,11 @@ export default function LoginScreen() {
         // Clear any previous OTP - will be set when received from email
         setDisplayedOTP("");
         setReceivedOTP("");
+        // Remember this email for next time (per server)
+        try {
+          const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
+          await AsyncStorage.setItem(key, email.trim().toLowerCase());
+        } catch {}
         setCurrentStep("otp");
         Alert.alert(
           "OTP Sent",
@@ -164,6 +189,11 @@ export default function LoginScreen() {
         console.log("🏪 Auth store login result:", loginResult);
 
         if (loginResult) {
+          // Ensure email is remembered
+          try {
+            const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
+            await AsyncStorage.setItem(key, email.trim().toLowerCase());
+          } catch {}
           console.log("🎉 Login successful, navigating to tabs...");
           Alert.alert("Success", "Login successful!");
           router.replace("/(tabs)");
@@ -297,15 +327,24 @@ export default function LoginScreen() {
     >
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
         style={styles.keyboardView}
       >
-        <View style={styles.content}>
-          {/* Logo/Title */}
-          <View style={styles.header}>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.scrollContainer}
+        >
+          <View style={styles.content}>
+            {/* Logo/Title */}
+            <View style={styles.header}>
             <View style={styles.logoContainer}>
-              <Ionicons name="business" size={60} color="#ffffff" />
+              <Image 
+                source={require("../../assets/icon.png")} 
+                style={styles.logoImage}
+                resizeMode="contain"
+              />
             </View>
-            <Text style={styles.title}>ERPNext Mobile</Text>
+            <Text style={styles.title}>Printechs ERP Application</Text>
             <Text style={styles.subtitle}>Analytics & Approvals</Text>
           </View>
 
@@ -398,50 +437,6 @@ export default function LoginScreen() {
                     <Text style={styles.otpInstructionsSubtext}>
                       The code expires in 5 minutes
                     </Text>
-
-                    {isMonitoringClipboard && (
-                      <Text style={styles.monitoringText}>
-                        🔍 Monitoring clipboard for OTP...
-                      </Text>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.refreshButton}
-                      onPress={async () => {
-                        try {
-                          const clipboardContent = await Clipboard.getString();
-                          const otpMatch = clipboardContent.match(/\b\d{6}\b/);
-                          if (otpMatch) {
-                            const detectedOTP = otpMatch[0];
-                            setReceivedOTP(detectedOTP);
-                            Alert.alert(
-                              "OTP Found",
-                              `OTP ${detectedOTP} found in clipboard!`
-                            );
-                          } else {
-                            Alert.alert(
-                              "No OTP Found",
-                              "No 6-digit OTP found in clipboard. Please copy the OTP from your email first."
-                            );
-                          }
-                        } catch (error) {
-                          Alert.alert(
-                            "Error",
-                            "Could not check clipboard. Please try again."
-                          );
-                        }
-                      }}
-                      disabled={isLoading}
-                    >
-                      <Ionicons
-                        name="refresh-outline"
-                        size={16}
-                        color="#007AFF"
-                      />
-                      <Text style={styles.refreshButtonText}>
-                        Check Clipboard
-                      </Text>
-                    </TouchableOpacity>
                   </View>
 
                   {/* OTP Input */}
@@ -454,20 +449,6 @@ export default function LoginScreen() {
                     receivedOTP={receivedOTP}
                     displayOTP={receivedOTP}
                   />
-
-                  {/* Test OTP Button (for debugging) */}
-                  <TouchableOpacity
-                    style={styles.testButton}
-                    onPress={() => {
-                      const testOTP = "408057";
-                      setReceivedOTP(testOTP);
-                    }}
-                    disabled={isLoading}
-                  >
-                    <Text style={styles.testButtonText}>
-                      Test Auto-fill OTP (408057)
-                    </Text>
-                  </TouchableOpacity>
 
                   {/* Back to Email Button */}
                   <TouchableOpacity
@@ -512,8 +493,9 @@ export default function LoginScreen() {
           </View>
 
           {/* Footer */}
+          </View>
           <Text style={styles.footer}>Powered by Printechs</Text>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
 
       {/* Server Configuration Modal */}
@@ -549,23 +531,40 @@ const styles = StyleSheet.create({
   keyboardView: {
     flex: 1,
   },
+  scrollContainer: {
+    flexGrow: 1,
+    justifyContent: "space-between",
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: Platform.OS === "ios" ? 160 : 80,
+  },
   content: {
     flex: 1,
     justifyContent: "space-between",
-    padding: 24,
   },
   header: {
     alignItems: "center",
-    marginTop: 60,
+    marginTop: 24,
   },
   logoContainer: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    borderWidth: 6,
+    borderColor: "#FF6B35",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 20,
+    shadowColor: "#FF6B35",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  logoImage: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
   },
   title: {
     fontSize: 32,
@@ -687,31 +686,6 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     textAlign: "center",
   },
-  monitoringText: {
-    fontSize: 12,
-    color: "#007AFF",
-    textAlign: "center",
-    marginTop: 8,
-    fontStyle: "italic",
-  },
-  refreshButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#f0f8ff",
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 6,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: "#007AFF",
-  },
-  refreshButtonText: {
-    color: "#007AFF",
-    fontSize: 14,
-    fontWeight: "600",
-    marginLeft: 6,
-  },
   inputContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -758,19 +732,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     marginLeft: 8,
-  },
-  testButton: {
-    backgroundColor: "#f0f0f0",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    marginBottom: 12,
-    alignItems: "center",
-  },
-  testButtonText: {
-    color: "#007AFF",
-    fontSize: 14,
-    fontWeight: "600",
   },
   serverContainer: {
     marginTop: 16,

@@ -164,18 +164,6 @@ export const OTPInput: React.FC<OTPInputProps> = ({
         We've sent a 6-digit code to your email
       </Text>
 
-      {receivedOTP && (
-        <Text style={styles.autofillText}>
-          📧 OTP detected from email - Auto-filling...
-        </Text>
-      )}
-
-      {isComplete && !receivedOTP && (
-        <Text style={styles.completeText}>
-          ✅ OTP Complete - Tap "Verify OTP" or wait for auto-submit
-        </Text>
-      )}
-
       <View style={styles.otpContainer}>
         {otp.map((digit, index) => (
           <TextInput
@@ -248,14 +236,6 @@ export const OTPInput: React.FC<OTPInputProps> = ({
           </Text>
         </TouchableOpacity>
       </View>
-
-      {/* OTP Display above keyboard */}
-      {displayOTP && (
-        <View style={styles.keyboardOTPContainer}>
-          <Text style={styles.keyboardOTPLabel}>Your OTP:</Text>
-          <Text style={styles.keyboardOTPText}>{displayOTP}</Text>
-        </View>
-      )}
     </View>
   );
 };
@@ -278,20 +258,6 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     marginBottom: 20,
-  },
-  completeText: {
-    fontSize: 14,
-    color: "#34C759",
-    textAlign: "center",
-    marginBottom: 16,
-    fontWeight: "600",
-  },
-  autofillText: {
-    fontSize: 14,
-    color: "#007AFF",
-    textAlign: "center",
-    marginBottom: 16,
-    fontWeight: "600",
   },
   otpContainer: {
     flexDirection: "row",
@@ -382,31 +348,5 @@ const styles = StyleSheet.create({
   },
   disabledText: {
     color: "#999",
-  },
-  keyboardOTPContainer: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: "#f8f9fa",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#e9ecef",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  keyboardOTPLabel: {
-    fontSize: 16,
-    color: "#495057",
-    fontWeight: "600",
-    marginRight: 8,
-  },
-  keyboardOTPText: {
-    fontSize: 20,
-    color: "#007AFF",
-    fontWeight: "700",
-    letterSpacing: 2,
   },
 });

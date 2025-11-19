@@ -59,11 +59,9 @@ export const TopCustomersChart: React.FC<TopCustomersChartProps> = ({
 
   const chartData = {
     labels: data.map((item, index) => {
-      // Show customer names in chart labels for better identification
-      // Truncate long names to fit chart
-      const name =
-        item.customer_name || item.customer || `Customer ${index + 1}`;
-      return name.length > 8 ? name.substring(0, 8) + "..." : name;
+      // Use rank numbers for cleaner chart display
+      // Full names shown in cards below
+      return `#${index + 1}`;
     }),
     datasets: [
       {

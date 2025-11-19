@@ -54,7 +54,7 @@ export default function SalesDashboardScreen() {
     kpis,
     isLoading,
     error,
-    refetch,
+    refetch: refetchCurrent,
   } = useSalesDashboard(ytdRanges.currentYTD);
 
   // Fetch last year data for comparison
@@ -63,6 +63,7 @@ export default function SalesDashboardScreen() {
     kpis: lastYearKpis,
     isLoading: lastYearLoading,
     error: lastYearError,
+    refetch: refetchLastYear,
   } = useSalesDashboard(ytdRanges.lastYearYTD);
 
   // Debug: Log the data we're receiving
@@ -85,9 +86,18 @@ export default function SalesDashboardScreen() {
   });
 
   const onRefresh = async () => {
+    console.log("🔄 Refreshing Sales Dashboard...");
     setRefreshing(true);
-    await refetch();
-    setRefreshing(false);
+
+    try {
+      // Refetch both current year and last year data in parallel
+      await Promise.all([refetchCurrent(), refetchLastYear()]);
+      console.log("✅ Sales Dashboard refreshed successfully");
+    } catch (error) {
+      console.error("❌ Error refreshing Sales Dashboard:", error);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const formatCurrency = (value: number) => {
@@ -109,7 +119,10 @@ export default function SalesDashboardScreen() {
         <Text style={styles.errorMessage}>
           {error?.message || lastYearError?.message || "Unknown error"}
         </Text>
-        <TouchableOpacity style={styles.retryButton} onPress={() => refetch()}>
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => Promise.all([refetchCurrent(), refetchLastYear()])}
+        >
           <Ionicons name="refresh-outline" size={20} color="#ffffff" />
           <Text style={styles.retryButtonText}>Retry</Text>
         </TouchableOpacity>
@@ -630,9 +643,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    gap: 4,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     borderRadius: 12,
   },
   activeTab: {
@@ -644,7 +657,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   tabText: {
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: "700",
     color: "#ffffff",
   },

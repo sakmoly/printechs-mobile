@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -6,16 +6,19 @@ import {
   TouchableOpacity,
   Alert,
   ScrollView,
+  Image,
 } from "react-native";
 import { router } from "expo-router";
 import { useAuthStore } from "../../src/store/auth";
 import { Ionicons } from "@expo/vector-icons";
 import { env } from "../../src/config/env";
 import { ServerConfig } from "../../src/components/ServerConfig";
+import { useUserProfile } from "../../src/hooks/useOptimizedApis";
 
 export default function SettingsScreen() {
   const { user, logout, serverConfig } = useAuthStore();
   const [showServerConfig, setShowServerConfig] = useState(false);
+  const { data: userProfile } = useUserProfile();
 
   const handleLogout = () => {
     Alert.alert("Logout", "Are you sure you want to logout?", [
@@ -35,15 +38,40 @@ export default function SettingsScreen() {
     return serverConfig.serverUrl || "No server configured";
   };
 
+  const resolveImageUrl = (url?: string | null) => {
+    if (!url) return null;
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith("/")) {
+      const base = serverConfig?.serverUrl || "";
+      return base ? `${base}${url}` : null;
+    }
+    return url;
+  };
+
+  const imageUrl =
+    resolveImageUrl(user?.image) ||
+    resolveImageUrl(user?.user_image) ||
+    resolveImageUrl(user?.photo_url) ||
+    null;
+
   return (
     <ScrollView style={styles.container}>
       {/* User Info */}
       <View style={styles.userCard}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={40} color="#667eea" />
-        </View>
+        {imageUrl ? (
+          <Image
+            source={{ uri: imageUrl }}
+            style={styles.avatarImage}
+            onError={() => {}}
+          />
+        ) : (
+          <Image
+            source={require("../../assets/icon.png")}
+            style={styles.avatarImage}
+          />
+        )}
         <Text style={styles.userName}>
-          {user?.full_name || user?.username || "User"}
+          {userProfile?.employee_name || user?.full_name || user?.username || "User"}
         </Text>
         <Text style={styles.userEmail}>{user?.username}</Text>
       </View>
@@ -106,13 +134,11 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
-  avatar: {
+  avatarImage: {
     width: 80,
     height: 80,
     borderRadius: 40,
     backgroundColor: "#e0e7ff",
-    justifyContent: "center",
-    alignItems: "center",
     marginBottom: 16,
   },
   userName: {

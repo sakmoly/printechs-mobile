@@ -1,12 +1,14 @@
 {
   "expo": {
-    "name": "ERPNext Mobile",
+    "name": "Printechs ERP Application",
     "slug": "erpnext-mobile",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "newArchEnabled": true,
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "description": "Enterprise Resource Planning mobile app for managing sales, inventory, receivables, and approvals on the go.",
+    "primaryColor": "#667eea",
     "splash": {
       "image": "./assets/splash.png",
       "resizeMode": "contain",
@@ -16,14 +18,23 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.printechs.erpnext",
-      "buildNumber": "1",
+      "buildNumber": "4",
+      "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to camera to scan QR codes",
         "NSPhotoLibraryUsageDescription": "This app needs access to photo library to select images",
+        "NSLocationWhenInUseUsageDescription": "This app needs location access for territory-based features",
+        "NSUserNotificationsUsageDescription": "This app needs notification permission to send you important alerts",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
-      }
+        },
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["remote-notification"]
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      },
+      "associatedDomains": []
     },
     "android": {
       "adaptiveIcon": {
@@ -31,20 +42,36 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.printechs.erpnext",
-      "versionCode": 1,
+      "versionCode": 3,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "INTERNET",
-        "ACCESS_NETWORK_STATE"
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE"
       ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "scheme": "erpnext",
-    "plugins": ["expo-router", "expo-secure-store"],
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#ffffff",
+          "sounds": ["./assets/notification-sound.wav"]
+        }
+      ]
+    ],
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#ffffff"
+    },
     "extra": {
       "router": {
         "origin": false

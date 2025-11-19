@@ -1,5 +1,5 @@
 @echo off
-echo 🚀 Starting ERPNext Mobile App...
+echo 🚀 Starting Printechs ERP Application...
 echo.
 echo 📱 Make sure you have:
 echo    - Node.js installed

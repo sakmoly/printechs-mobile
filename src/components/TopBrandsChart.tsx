@@ -12,6 +12,8 @@ import { BarChart } from "react-native-chart-kit";
 interface BrandData {
   brand: string;
   total_sales: number;
+  sold_qty?: number; // SUM(sold_qty) from backend
+  profit?: number; // Profit amount from backend
   total_quantity?: number;
   total_cost?: number;
   gross_profit_amount?: number;
@@ -39,6 +41,8 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
     currentData: data?.slice(0, 3).map((item) => ({
       brand: item.brand,
       total_sales: item.total_sales,
+      sold_qty: item.sold_qty, // New field
+      profit: item.profit, // New field
       gross_profit_amount: item.gross_profit_amount,
       gross_profit_percent: item.gross_profit_percent,
       total_quantity: item.total_quantity,
@@ -63,7 +67,8 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
       case "sales":
         return item.total_sales;
       case "profit":
-        return item.gross_profit_amount || 0;
+        // Prioritize new 'profit' field, fallback to gross_profit_amount
+        return item.profit || item.gross_profit_amount || 0;
       case "margin":
         return item.gross_profit_percent || 0;
       default:
@@ -158,7 +163,7 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
 
   const totalSales = data.reduce((sum, item) => sum + item.total_sales, 0);
   const totalProfit = data.reduce(
-    (sum, item) => sum + (item.gross_profit_amount || 0),
+    (sum, item) => sum + (item.profit || item.gross_profit_amount || 0),
     0
   );
   const avgMargin =
@@ -292,10 +297,16 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
                   <Text
                     style={[
                       styles.cardValue,
-                      { color: getColor(item.gross_profit_amount || 0) },
+                      {
+                        color: getColor(
+                          item.profit || item.gross_profit_amount || 0
+                        ),
+                      },
                     ]}
                   >
-                    {formatCurrency(item.gross_profit_amount || 0)}
+                    {formatCurrency(
+                      item.profit || item.gross_profit_amount || 0
+                    )}
                   </Text>
                 </View>
                 <View style={styles.cardStat}>
@@ -312,7 +323,11 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
                 <View style={styles.cardStat}>
                   <Text style={styles.cardLabel}>Qty</Text>
                   <Text style={styles.cardValue}>
-                    {(item.total_quantity || 0).toLocaleString()}
+                    {(
+                      item.sold_qty ||
+                      item.total_quantity ||
+                      0
+                    ).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.cardStat}>

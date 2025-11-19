@@ -1,5 +1,6 @@
 import { http } from "./http";
 import { storage } from "./storage";
+import { useAuthStore } from "../store/auth";
 
 export interface OTPRequest {
   identifier: string;
@@ -34,6 +35,16 @@ export interface TokenData {
   expires_at: number; // Timestamp when token expires
 }
 
+/**
+ * Helper function to get client_id from configuration
+ * Falls back to default if not set
+ */
+const getClientId = (): string => {
+  const serverConfig = useAuthStore.getState().serverConfig;
+  // Use configured client_id if available, otherwise fall back to default
+  return serverConfig.clientId || "55d4241f3a";
+};
+
 export const oauthApi = {
   /**
    * Request OTP for authentication
@@ -42,22 +53,49 @@ export const oauthApi = {
     identifier: string,
     channel: "email" | "sms" = "email"
   ): Promise<{ success: boolean; error?: string }> {
+    let config: any = null;
+    let baseUrl = "";
+
     try {
       console.log("📧 Requesting OTP for:", identifier);
 
+      const clientId = getClientId();
+      console.log("🔑 Using client_id:", clientId);
+
       const requestData: OTPRequest = {
         identifier,
-        client_id: "55d4241f3a", // Your client ID
+        client_id: clientId,
         channel,
       };
 
+      console.log("📤 Request Data:", JSON.stringify(requestData, null, 2));
+
       // Create a simple unauthenticated HTTP client for OTP request
       const serverConfig = await storage.getItem("serverConfig");
-      const baseUrl = serverConfig
-        ? JSON.parse(serverConfig).serverUrl
-        : "https://printechs.com";
+      config = serverConfig ? JSON.parse(serverConfig) : null;
+      baseUrl = config?.serverUrl || "";
+
+      // If no base URL, check the auth store as fallback
+      if (!baseUrl) {
+        const authStoreConfig = useAuthStore.getState().serverConfig;
+        baseUrl = authStoreConfig.serverUrl || "";
+        console.log(
+          "⚠️ No server config in storage, using auth store:",
+          baseUrl
+        );
+      }
+
+      if (!baseUrl) {
+        throw new Error(
+          "No server URL configured. Please configure the server URL in Settings."
+        );
+      }
 
       console.log("🌐 Using base URL:", baseUrl);
+      console.log(
+        "📡 Full URL:",
+        `${baseUrl}/api/method/printechs_utility.auth_otp.request_otp`
+      );
 
       // Use axios directly without authentication
       const axios = (await import("axios")).default;
@@ -74,6 +112,7 @@ export const oauthApi = {
       );
 
       console.log("✅ OTP request successful");
+      console.log("📥 Response:", response.data);
       return { success: true };
     } catch (error: any) {
       console.error("❌ OTP request failed:", error);
@@ -81,20 +120,40 @@ export const oauthApi = {
         message: error.message,
         response: error.response?.data,
         status: error.response?.status,
+        baseUrl: config?.serverUrl,
+        clientId: getClientId(),
       });
 
       let errorMessage = "Failed to send OTP";
-      if (error.response?.status === 401) {
+
+      if (
+        error.code === "NETWORK_ERROR" ||
+        error.message?.includes("Network Error")
+      ) {
         errorMessage =
-          "Authentication failed. Please check your server configuration.";
+          "Network error. Please check your internet connection and server URL.";
+      } else if (error.response?.status === 401) {
+        errorMessage =
+          "Authentication failed. Please check your server configuration and client ID.";
+      } else if (error.response?.status === 404) {
+        errorMessage =
+          "OTP API not found. Please ensure the backend API is deployed.";
+      } else if (error.response?.status === 417) {
+        errorMessage =
+          error.response?.data?.message ||
+          "OTP validation failed. Please check your email and try again.";
       } else if (error.response?.status === 400) {
         errorMessage = "Invalid email address or request format.";
       } else if (error.response?.status === 500) {
-        errorMessage = "Server error. Please try again later.";
+        errorMessage =
+          "Server error. Please try again later or contact support.";
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
       }
 
+      console.error("❌ Final Error Message:", errorMessage);
       return {
         success: false,
         error: errorMessage,
@@ -109,26 +168,50 @@ export const oauthApi = {
     identifier: string,
     otp: string
   ): Promise<{ success: boolean; data?: TokenData; error?: string }> {
+    let baseUrl = "";
+
     try {
       console.log("🔐 Exchanging OTP for token...");
       console.log("📧 Identifier:", identifier);
       console.log("🔢 OTP:", otp);
 
+      const clientId = getClientId();
+      console.log("🔑 Using client_id:", clientId);
+
       const requestData: OTPExchangeRequest = {
         identifier,
         otp,
-        client_id: "55d4241f3a", // Your client ID
+        client_id: clientId,
       };
 
-      console.log("📤 Request data:", requestData);
+      console.log("📤 Request data:", JSON.stringify(requestData, null, 2));
 
       // Use unauthenticated HTTP client for OTP exchange
       const serverConfig = await storage.getItem("serverConfig");
-      const baseUrl = serverConfig
-        ? JSON.parse(serverConfig).serverUrl
-        : "https://printechs.com";
+      const config = serverConfig ? JSON.parse(serverConfig) : null;
+      baseUrl = config?.serverUrl || "";
+
+      // If no base URL, check the auth store as fallback
+      if (!baseUrl) {
+        const authStoreConfig = useAuthStore.getState().serverConfig;
+        baseUrl = authStoreConfig.serverUrl || "";
+        console.log(
+          "⚠️ No server config in storage, using auth store:",
+          baseUrl
+        );
+      }
+
+      if (!baseUrl) {
+        throw new Error(
+          "No server URL configured. Please configure the server URL in Settings."
+        );
+      }
 
       console.log("🌐 Using base URL for OTP exchange:", baseUrl);
+      console.log(
+        "📡 Full URL:",
+        `${baseUrl}/api/method/printechs_utility.auth_otp.exchange_otp_for_token`
+      );
 
       // Use axios directly without authentication
       const axios = (await import("axios")).default;
@@ -204,25 +287,41 @@ export const oauthApi = {
 
   /**
    * Refresh access token using refresh token
+   * Enhanced with retry logic and better error classification
    */
-  async refreshToken(): Promise<{
+  async refreshToken(retryCount: number = 0): Promise<{
     success: boolean;
     data?: TokenData;
     error?: string;
+    isRecoverable?: boolean; // true if error is temporary (network/server), false if refresh token is invalid
   }> {
+    const maxRetries = 3;
+    const retryDelay = (attempt: number) => Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+
     try {
       const refreshToken = await storage.getItem("refresh_token");
       if (!refreshToken) {
-        throw new Error("No refresh token available");
+        return {
+          success: false,
+          error: "No refresh token available",
+          isRecoverable: false, // Non-recoverable - user must login again
+        };
       }
 
-      console.log("🔄 Refreshing access token...");
+      console.log(`🔄 Refreshing access token... (attempt ${retryCount + 1}/${maxRetries + 1})`);
 
       // Get server config for base URL
       const serverConfig = await storage.getItem("serverConfig");
-      const baseUrl = serverConfig
-        ? JSON.parse(serverConfig).serverUrl
-        : "https://printechs.com";
+      const config = serverConfig ? JSON.parse(serverConfig) : null;
+      const baseUrl = config?.serverUrl || "";
+
+      if (!baseUrl) {
+        return {
+          success: false,
+          error: "No server URL configured",
+          isRecoverable: false,
+        };
+      }
 
       console.log("🌐 Using base URL for token refresh:", baseUrl);
 
@@ -233,7 +332,7 @@ export const oauthApi = {
       const formData = new URLSearchParams();
       formData.append("grant_type", "refresh_token");
       formData.append("refresh_token", refreshToken);
-      formData.append("client_id", "55d4241f3a");
+      formData.append("client_id", getClientId()); // Get client_id from configuration
 
       const response = await axios.post(
         `${baseUrl}/api/method/frappe.integrations.oauth2.get_token`,
@@ -273,24 +372,66 @@ export const oauthApi = {
         await storage.setItem("token_data", JSON.stringify(tokenData));
 
         console.log("✅ Token refreshed successfully");
-        return { success: true, data: tokenData };
+        return { success: true, data: tokenData, isRecoverable: true };
       }
 
       throw new Error("Invalid refresh response format - no access_token");
     } catch (error: any) {
-      console.error("❌ Token refresh failed:", error);
+      console.error(`❌ Token refresh failed (attempt ${retryCount + 1}):`, error);
       console.error("❌ Error details:", {
         message: error.message,
         response: error.response?.data,
         status: error.response?.status,
+        code: error.code,
       });
 
+      const status = error.response?.status;
+      const errorCode = error.code;
+      const errorMessageLower = error.message?.toLowerCase() || "";
+
+      // Classify errors
+      const isNetworkError = 
+        !error.response || 
+        errorCode === "ECONNABORTED" || 
+        errorCode === "ETIMEDOUT" ||
+        errorCode === "ENOTFOUND" ||
+        errorCode === "ECONNREFUSED" ||
+        errorMessageLower.includes("network") ||
+        errorMessageLower.includes("timeout") ||
+        errorMessageLower.includes("connection");
+
+      const isServerError = status >= 500 && status < 600;
+
+      const isNonRecoverable = 
+        status === 401 || // Unauthorized - refresh token expired/invalid
+        status === 400 || // Bad Request - invalid grant/client ID
+        (status === 403 && error.response?.data?.error_description?.toLowerCase().includes("invalid")); // Invalid refresh token
+
+      // Determine if error is recoverable
+      const isRecoverable = (isNetworkError || isServerError) && !isNonRecoverable;
+
+      // Retry logic for recoverable errors
+      if (isRecoverable && retryCount < maxRetries) {
+        const delay = retryDelay(retryCount);
+        console.log(`⏳ Retrying token refresh in ${delay}ms... (${retryCount + 1}/${maxRetries})`);
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.refreshToken(retryCount + 1);
+      }
+
+      // Build error message
       let errorMessage = "Token refresh failed";
-      if (error.response?.status === 400) {
-        errorMessage = "Invalid refresh token or client ID";
-      } else if (error.response?.status === 401) {
-        errorMessage = "Refresh token expired or invalid";
-      } else if (error.response?.status === 500) {
+      if (isNonRecoverable) {
+        if (status === 401) {
+          errorMessage = "Refresh token expired or invalid";
+        } else if (status === 400) {
+          errorMessage = "Invalid refresh token or client ID";
+        } else {
+          errorMessage = error.response?.data?.error_description || "Refresh token is invalid";
+        }
+      } else if (isNetworkError) {
+        errorMessage = "Network error during token refresh";
+      } else if (isServerError) {
         errorMessage = "Server error during token refresh";
       } else if (error.response?.data?.error_description) {
         errorMessage = error.response.data.error_description;
@@ -299,6 +440,7 @@ export const oauthApi = {
       return {
         success: false,
         error: errorMessage,
+        isRecoverable: isRecoverable,
       };
     }
   },
@@ -318,6 +460,53 @@ export const oauthApi = {
       return tokenData.expires_at > now + 300000;
     } catch (error) {
       console.error("❌ Error checking token validity:", error);
+      return false;
+    }
+  },
+
+  /**
+   * Proactively refresh token if it's about to expire (within 5 minutes)
+   * This ensures the user stays logged in by refreshing tokens before expiration
+   * Returns true if token is valid or refreshed successfully, false otherwise
+   */
+  async ensureValidToken(): Promise<boolean> {
+    try {
+      const tokenDataStr = await storage.getItem("token_data");
+      if (!tokenDataStr) {
+        console.log("⚠️ No token data found");
+        return false;
+      }
+
+      const tokenData: TokenData = JSON.parse(tokenDataStr);
+      const now = Date.now();
+      const expiresBuffer = 5 * 60 * 1000; // 5 minutes
+
+      // If token expires soon, refresh it proactively
+      if (tokenData.expires_at <= now + expiresBuffer) {
+        console.log("🔄 Token expires soon, refreshing proactively...");
+        const refreshResult = await this.refreshToken();
+        
+        if (refreshResult.success) {
+          console.log("✅ Token refreshed proactively");
+          return true;
+        }
+
+        // If refresh failed but is recoverable, token might still be valid for now
+        if (refreshResult.isRecoverable) {
+          console.log("⚠️ Proactive refresh failed (recoverable), token may still be valid");
+          // Check if current token is still valid
+          return tokenData.expires_at > now;
+        }
+
+        // Non-recoverable error - token is invalid
+        console.log("❌ Proactive refresh failed (non-recoverable)");
+        return false;
+      }
+
+      // Token is still valid
+      return true;
+    } catch (error) {
+      console.error("❌ Error ensuring valid token:", error);
       return false;
     }
   },

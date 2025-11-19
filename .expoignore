@@ -1,0 +1,10 @@
+# Exclude Android build directories
+node_modules/expo-modules-core/android/build/**
+node_modules/expo-modules-core/android/.cxx/**
+android/app/build/**
+android/build/**
+android/.cxx/**
+**/.cxx/**
+**/CMakeFiles/**
+**/CMakeTmp/**
+

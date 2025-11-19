@@ -1,0 +1,263 @@
+{
+  "info": {
+    "_postman_id": "b2a9b3e2-7d5f-4b7e-9c2a-collection-inventory-receivables",
+    "name": "Printechs Mobile Backend - Receivables & Inventory",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for Receivables, Inventory, and related endpoints. Set collection variables baseUrl and token before running."
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://your.erp.server" },
+    { "key": "token", "value": "" },
+    { "key": "company", "value": "Printechs" },
+    { "key": "territory", "value": "" },
+    { "key": "customer", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Receivables",
+      "item": [
+        {
+          "name": "Snapshot",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.receivables.get_receivables_snapshot?company={{company}}&territory={{territory}}",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.receivables.get_receivables_snapshot"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "territory", "value": "{{territory}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Performance",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.receivables.get_receivables_performance?company={{company}}&territory={{territory}}&limit=20",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.receivables.get_receivables_performance"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "territory", "value": "{{territory}}" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Trends",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.receivables.get_receivables_trends?company={{company}}&territory={{territory}}&months=6",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.receivables.get_receivables_trends"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "territory", "value": "{{territory}}" },
+                { "key": "months", "value": "6" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Territory Receivables",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.receivables.get_territory_receivables?company={{company}}&territory={{territory}}&limit=50&offset=0&sort=amount_desc",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.receivables.get_territory_receivables"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "territory", "value": "{{territory}}" },
+                { "key": "limit", "value": "50" },
+                { "key": "offset", "value": "0" },
+                { "key": "sort", "value": "amount_desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Customer Statement (Preview)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.receivables.get_customer_statement?company={{company}}&customer={{customer}}",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.receivables.get_customer_statement"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "customer", "value": "{{customer}}" },
+                { "key": "from_date", "value": "" },
+                { "key": "to_date", "value": "" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Statement by Email",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customer_name\": \"{{customer}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.customer_notifications.send_statement_pdf",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.customer_notifications.send_statement_pdf"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inventory",
+      "item": [
+        {
+          "name": "Snapshot",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.inventory.get_inventory_snapshot?company={{company}}&warehouse=&low_stock_threshold=0",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.inventory.get_inventory_snapshot"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "warehouse", "value": "" },
+                { "key": "low_stock_threshold", "value": "0" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Performance",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.inventory.get_inventory_performance?company={{company}}&warehouse=&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.inventory.get_inventory_performance"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "warehouse", "value": "" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Trends",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.inventory.get_inventory_trends?company={{company}}&warehouse=&from_date={{from_date}}&to_date={{to_date}}",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.inventory.get_inventory_trends"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "warehouse", "value": "" },
+                { "key": "from_date", "value": "{{from_date}}" },
+                { "key": "to_date", "value": "{{to_date}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Risk",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.inventory.get_inventory_risk?company={{company}}&warehouse=",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.inventory.get_inventory_risk"
+              ],
+              "query": [
+                { "key": "company", "value": "{{company}}" },
+                { "key": "warehouse", "value": "" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard (optional)",
+      "item": [
+        {
+          "name": "Complete Dashboard Data",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/method/printechs_utility.dashboard.get_complete_dashboard_data?company={{company}}",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "api",
+                "method",
+                "printechs_utility.dashboard.get_complete_dashboard_data"
+              ],
+              "query": [{ "key": "company", "value": "{{company}}" }]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
