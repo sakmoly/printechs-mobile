@@ -10,7 +10,9 @@ import {
   Dimensions,
   Image,
   Alert,
+  Platform,
 } from "react-native";
+import * as Notifications from "expo-notifications";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect } from "expo-router";
 import { KpiCard } from "../../src/components/KpiCard";
@@ -26,6 +28,7 @@ import {
   useReceivablesPerformance,
   useInventorySnapshot,
   useInventoryPerformance,
+  optimizedApis,
 } from "../../src/hooks/useOptimizedApis";
 
 const { width } = Dimensions.get("window");
@@ -45,6 +48,7 @@ export default function DashboardScreen() {
   const serverConfig = useAuthStore((state) => state.serverConfig);
   const [profileLoadFailed, setProfileLoadFailed] = useState(false);
   const currentUsername = user?.username || "";
+  const pushTokenRegistered = useRef(false);
 
   const MENU_KEY_MAP: Record<string, string> = {
     menu_dashboard: "AO-00022",
@@ -178,7 +182,85 @@ export default function DashboardScreen() {
       refetchReceivablesPerformance();
       refetchInventorySnapshot();
       refetchInventoryPerformance();
+
+      async function registerPushToken() {
+        try {
+          const existingPermission = await Notifications.getPermissionsAsync();
+          let finalStatus = existingPermission.status;
+          if (finalStatus !== "granted") {
+            const requested = await Notifications.requestPermissionsAsync();
+            finalStatus = requested.status;
+          }
+
+          if (finalStatus !== "granted") {
+            console.log("Notification permissions denied");
+            return;
+          }
+
+          if (pushTokenRegistered.current) {
+            return;
+          }
+
+          const tokenResponse = await Notifications.getExpoPushTokenAsync();
+          const expoToken =
+            (tokenResponse as any)?.data ||
+            (tokenResponse as any)?.expoPushToken ||
+            tokenResponse;
+
+          if (!expoToken || typeof expoToken !== "string") {
+            console.log("Unable to retrieve Expo push token");
+            return;
+          }
+
+          const company = permissions.scope?.company || user?.company || null;
+          const territory =
+            permissions.scope?.territories?.[0] ||
+            permissions.scope?.territory ||
+            (user as any)?.territory ||
+            (user as any)?.branch ||
+            null;
+
+          await optimizedApis.storePushToken({
+            expoToken,
+            platform: Platform.OS,
+            territory,
+            company,
+          });
+          pushTokenRegistered.current = true;
+        } catch (error) {
+          console.log("⚠️ Failed to register push token:", error);
+        }
+      }
+
+      registerPushToken();
+
+      const receivedSubscription =
+        Notifications.addNotificationReceivedListener(() => {
+          refetchDashboard();
+          refetchUserProfile();
+          refetchReceivablesSnapshot();
+          refetchReceivablesPerformance();
+          refetchInventorySnapshot();
+          refetchInventoryPerformance();
+        });
+
+      const responseSubscription =
+        Notifications.addNotificationResponseReceivedListener(() => {
+          refetchDashboard();
+          refetchUserProfile();
+          refetchReceivablesSnapshot();
+          refetchReceivablesPerformance();
+          refetchInventorySnapshot();
+          refetchInventoryPerformance();
+        });
+
+      return () => {
+        receivedSubscription.remove();
+        responseSubscription.remove();
+      };
     }, [
+      permissions.scope,
+      user,
       refetchDashboard,
       refetchUserProfile,
       refetchReceivablesSnapshot,
