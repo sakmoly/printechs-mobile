@@ -1,4 +1,4 @@
-import axios, { AxiosInstance, AxiosError } from "axios";
+import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from "axios";
 import { storage } from "./storage";
 import { oauthApi } from "./oauth";
 
@@ -164,7 +164,10 @@ export class HttpClient {
             url.includes("get_logged_user") ||
             permissionErrorDetected);
 
-        if (!isExpected403) {
+        const isSoft417 =
+          status === 417 && url.includes("store_push_token");
+
+        if (!isExpected403 && !isSoft417) {
           console.error("❌ HTTP Error:", {
             message: error.message,
             status: status,
@@ -174,7 +177,7 @@ export class HttpClient {
         }
 
         // Handle 417 separately - it means endpoint not found, don't try to refresh token
-        if (status === 417) {
+        if (status === 417 && !isSoft417) {
           console.log("⚠️ 417 error - API endpoint not found (not an auth issue)");
           // Don't try to refresh or logout - just pass the error through
         } else if (
@@ -259,8 +262,17 @@ export class HttpClient {
           }
         }
 
-        // Handle network errors
+        // Handle network errors (no HTTP response body)
         if (!error.response) {
+          const isTimeout =
+            error.code === "ECONNABORTED" ||
+            error.message?.toLowerCase().includes("timeout");
+          if (isTimeout) {
+            console.error("🌐 Request timed out before the server responded");
+            throw new Error(
+              "Request timed out. The server took too long to respond."
+            );
+          }
           console.error("🌐 Network error - no response received");
           throw new Error("Network error: Unable to connect to server");
         }
@@ -274,12 +286,19 @@ export class HttpClient {
     this.onUnauthorized = handler;
   }
 
-  async get<T>(url: string, params?: any): Promise<T> {
+  async get<T>(
+    url: string,
+    params?: any,
+    requestConfig?: AxiosRequestConfig
+  ): Promise<T> {
     try {
       if (!url || typeof url !== "string") {
         throw new Error("Invalid URL provided to GET request");
       }
-      const response = await this.client.get(url, { params });
+      const response = await this.client.get(url, {
+        ...requestConfig,
+        ...(params !== undefined ? { params } : {}),
+      });
       return response.data;
     } catch (error) {
       try {
@@ -307,7 +326,14 @@ export class HttpClient {
         if (typeof url === "string" && url.includes("clear_my_access_cache")) {
           // Do not log
         } else {
-          console.error("❌ POST request failed:", url, error);
+          const ax = error as AxiosError;
+          const quiet417Push =
+            typeof url === "string" &&
+            url.includes("store_push_token") &&
+            ax.response?.status === 417;
+          if (!quiet417Push) {
+            console.error("❌ POST request failed:", url, error);
+          }
         }
       } catch {}
       throw error;

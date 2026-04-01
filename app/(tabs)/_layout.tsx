@@ -1,7 +1,7 @@
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useMemo } from "react";
-import { useAuthStore } from "../../src/store/auth";
+import { useAuthStore, canAccessMenuObject } from "../../src/store/auth";
 
 type TabConfig = {
   name: string;
@@ -45,15 +45,15 @@ export default function TabsLayout() {
       return TAB_CONFIG;
     }
 
-    const allowed = TAB_CONFIG.filter(
-      (tab) => permissions.menus[tab.permissionKey] === true
+    const allowed = TAB_CONFIG.filter((tab) =>
+      canAccessMenuObject(permissions, tab.permissionKey)
     );
 
     if (allowed.length > 0) {
       return allowed;
     }
 
-    // Fallback to keep essential navigation available
+    // Every tab explicitly denied — keep Dashboard + Settings
     return TAB_CONFIG.filter((tab) =>
       ["AO-00022", "AO-00025"].includes(tab.permissionKey)
     );

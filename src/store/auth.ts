@@ -47,6 +47,19 @@ interface MenuPermissionState {
   scope?: AccessPermissionScope;
 }
 
+/**
+ * Menu visibility: only explicit `can_view: false` hides UI.
+ * Missing keys (backend uses different object_key codes, or empty map) default to allowed
+ * so the dashboard is usable until permissions align with the app.
+ */
+export function canAccessMenuObject(
+  permissions: MenuPermissionState,
+  objectKey: string
+): boolean {
+  if (!permissions.fetched) return true;
+  return permissions.menus[objectKey] !== false;
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   isAuthenticated: false,
   user: null,

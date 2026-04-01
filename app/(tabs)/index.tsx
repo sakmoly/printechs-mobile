@@ -18,7 +18,7 @@ import { router, useFocusEffect } from "expo-router";
 import { KpiCard } from "../../src/components/KpiCard";
 import { ExpandableDashboardCard } from "../../src/components/ExpandableDashboardCard";
 import { LoadingScreen } from "../../src/components/LoadingScreen";
-import { useAuthStore } from "../../src/store/auth";
+import { useAuthStore, canAccessMenuObject } from "../../src/store/auth";
 import { Ionicons } from "@expo/vector-icons";
 import {
   useDashboardData,
@@ -64,12 +64,8 @@ export default function DashboardScreen() {
 
   const canViewMenu = useCallback(
     (key: string) => {
-      if (!permissions?.fetched) {
-        return true;
-      }
       const mappedKey = MENU_KEY_MAP[key] || key;
-      const value = permissions.menus[mappedKey];
-      return value === true;
+      return canAccessMenuObject(permissions, mappedKey);
     },
     [permissions]
   );
@@ -520,8 +516,7 @@ export default function DashboardScreen() {
 
         {/* Receivables KPI + Expandable (like Sales Performance) */}
         {canViewMenu("menu_receivables") &&
-          recvSnapshot &&
-          recvPerformance &&
+          (recvSnapshot || recvPerformance) &&
           (() => {
           const totalReceivable = recvSnapshot?.totalUnpaid || 0;
           const agingArray = recvPerformance?.agingBreakdown || [];
@@ -585,8 +580,7 @@ export default function DashboardScreen() {
 
         {/* Inventory Expandable Section */}
         {canViewMenu("menu_inventory") &&
-          inventorySnapshot &&
-          inventoryPerformance &&
+          (inventorySnapshot || inventoryPerformance) &&
           (() => {
           const totalStockValue = inventorySnapshot?.totalInventoryValue || 0;
           const reorderAlerts = inventoryPerformance?.reorderAlerts || [];

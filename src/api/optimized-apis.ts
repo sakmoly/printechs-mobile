@@ -1,7 +1,11 @@
 import { http } from "./http";
 import { useAuthStore } from "../store/auth";
 import { oauthApi } from "./oauth";
+import { isAxiosError } from "axios";
 import { z } from "zod";
+
+/** Avoid repeating the same 417 guidance every focus/navigation */
+let pushTokenStore417Logged = false;
 
 // ========== SCHEMAS FOR SINGLE API RESPONSES ==========
 
@@ -568,7 +572,8 @@ export const optimizedApis = {
       if (!accessToken) throw new Error("No valid access token available");
       const response = await http.get<any>(
         "/api/method/printechs_utility.inventory.get_inventory_snapshot",
-        params
+        params,
+        { timeout: 120000 }
       );
       return response.message || response;
     } catch (error) {
@@ -1922,6 +1927,17 @@ export const optimizedApis = {
       );
       console.log("✅ Push token stored with backend");
     } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 417) {
+        if (!pushTokenStore417Logged) {
+          pushTokenStore417Logged = true;
+          console.log(
+            "ℹ️ Push token not accepted (HTTP 417). On the Frappe site, allow POST for " +
+              "`printechs_utility.api.store_push_token` (whitelisted server method), " +
+              "or align the app with the method name your `printechs_utility` app exposes."
+          );
+        }
+        return;
+      }
       console.error("❌ Store Push Token Error:", error);
       throw error;
     }
