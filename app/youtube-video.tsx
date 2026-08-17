@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet, Text, Dimensions, TouchableOpacity
 import { Stack, useLocalSearchParams } from "expo-router";
 import { WebView } from "react-native-webview";
 import * as Linking from "expo-linking";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 /**
  * Extract YouTube Video ID from various URL formats
@@ -313,7 +314,7 @@ export default function YouTubeVideo() {
 
   if (!youtubeUrl) {
     return (
-      <View style={styles.container}>
+      <SafeScreen style={styles.container}>
         <Stack.Screen
           options={{
             title,
@@ -325,13 +326,13 @@ export default function YouTubeVideo() {
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>No video URL provided</Text>
         </View>
-      </View>
+      </SafeScreen>
     );
   }
 
   if (!videoId) {
     return (
-      <View style={styles.container}>
+      <SafeScreen style={styles.container}>
         <Stack.Screen
           options={{
             title,
@@ -344,13 +345,13 @@ export default function YouTubeVideo() {
           <Text style={styles.errorText}>Invalid YouTube URL format</Text>
           <Text style={styles.errorSubtext}>{youtubeUrl}</Text>
         </View>
-      </View>
+      </SafeScreen>
     );
   }
 
   if (error || embedError) {
     return (
-      <View style={styles.container}>
+      <SafeScreen style={styles.container}>
         <Stack.Screen
           options={{
             title,
@@ -386,12 +387,12 @@ export default function YouTubeVideo() {
             <Text style={styles.retryButtonText}>Try Again</Text>
           </TouchableOpacity>
         </View>
-      </View>
+      </SafeScreen>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       <Stack.Screen
         options={{
           title,
@@ -434,7 +435,6 @@ export default function YouTubeVideo() {
             scalesPageToFit={true}
             allowsFullscreenVideo={true}
             allowsProtectedMedia={true}
-            androidHardwareAccelerationDisabled={false}
             androidLayerType="hardware"
             renderLoading={() => (
               <View style={styles.loadingOverlay}>
@@ -449,7 +449,7 @@ export default function YouTubeVideo() {
       <View style={styles.infoContainer}>
         <Text style={styles.videoTitle}>{title}</Text>
       </View>
-    </View>
+    </SafeScreen>
   );
 }
 

@@ -21,6 +21,7 @@ import {
   useProfileQRData,
 } from "../src/hooks/useOptimizedApis";
 import { Image as RNImage } from "react-native";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 const { width } = Dimensions.get("window");
 
@@ -188,7 +189,7 @@ export default function UserProfileScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -368,7 +369,7 @@ export default function UserProfileScreen() {
           <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
         </TouchableOpacity>
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

@@ -11,150 +11,137 @@ import {
   Modal,
   ScrollView,
   Clipboard,
-  Linking,
   Image,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { useAuthStore } from "../../src/store/auth";
+import { isDemoMode } from "../../src/api/demoMode";
+import { http } from "../../src/api/http";
 import { Ionicons } from "@expo/vector-icons";
 import { ServerConfig } from "../../src/components/ServerConfig";
 import { OTPInput } from "../../src/components/OTPInput";
 import { oauthApi } from "../../src/api/oauth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-type LoginStep = "email" | "otp";
+type LoginStep = "credentials" | "otp";
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState("");
-  const [currentStep, setCurrentStep] = useState<LoginStep>("email");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [currentStep, setCurrentStep] = useState<LoginStep>("credentials");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [showServerConfig, setShowServerConfig] = useState(false);
   const [receivedOTP, setReceivedOTP] = useState<string>("");
   const [displayedOTP, setDisplayedOTP] = useState<string>("");
-  const [isMonitoringClipboard, setIsMonitoringClipboard] = useState(false);
   const { serverConfig, loadServerConfig } = useAuthStore();
+  const demoMode = isDemoMode();
 
-  // Load server config on component mount
   useEffect(() => {
-    loadServerConfig().catch((error) => {
-      console.error("Failed to load server config:", error);
+    loadServerConfig().catch((err) => {
+      console.error("Failed to load server config:", err);
     });
-  }, []);
+  }, [loadServerConfig]);
 
-  // Prefill last used email (per server) on mount and when server config loads
   useEffect(() => {
     (async () => {
       try {
         const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
         const saved = await AsyncStorage.getItem(key);
-        if (saved) {
-          setEmail(saved);
-        }
+        if (saved) setEmail(saved);
       } catch (e) {
-        // non-fatal
         console.warn("Failed to read lastUsername:", e);
       }
     })();
   }, [serverConfig?.serverUrl]);
 
-  // Monitor clipboard for OTP when on OTP step
   useEffect(() => {
-    if (currentStep === "otp") {
-      setIsMonitoringClipboard(true);
-      const interval = setInterval(async () => {
-        try {
-          const clipboardContent = await Clipboard.getString();
-          // Check if clipboard contains a 6-digit number
-          const otpMatch = clipboardContent.match(/\b\d{6}\b/);
-          if (otpMatch) {
-            const detectedOTP = otpMatch[0];
-            console.log("📋 OTP detected from clipboard:", detectedOTP);
-            // Update received OTP (this will trigger display)
-            setReceivedOTP(detectedOTP);
-            setIsMonitoringClipboard(false);
-            clearInterval(interval);
-            Alert.alert(
-              "OTP Detected",
-              `OTP ${detectedOTP} detected from clipboard and filled automatically.`
-            );
-          }
-        } catch (error) {
-          console.log("Clipboard monitoring error:", error);
+    if (!demoMode && currentStep === "otp") {
+      setCurrentStep("credentials");
+      setError("");
+    }
+  }, [demoMode, currentStep]);
+
+  useEffect(() => {
+    if (currentStep !== "otp" || !demoMode) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const clipboardContent = await Clipboard.getString();
+        const otpMatch = clipboardContent.match(/\b\d{6}\b/);
+        if (otpMatch) {
+          setReceivedOTP(otpMatch[0]);
+          clearInterval(interval);
         }
-      }, 1000);
+      } catch {
+        // ignore clipboard errors
+      }
+    }, 1000);
 
-      // Stop monitoring after 60 seconds
-      const timeout = setTimeout(() => {
-        setIsMonitoringClipboard(false);
-        clearInterval(interval);
-      }, 60000);
+    const timeout = setTimeout(() => clearInterval(interval), 60000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [currentStep, demoMode]);
 
-      return () => {
-        clearInterval(interval);
-        clearTimeout(timeout);
-        setIsMonitoringClipboard(false);
-      };
+  const rememberUsername = async () => {
+    try {
+      const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
+      await AsyncStorage.setItem(key, email.trim().toLowerCase());
+    } catch {
+      // non-fatal
     }
-  }, [currentStep]);
+  };
 
-  const handleEmailSubmit = async () => {
-    console.log("📧 Email submit called with:", email);
-    console.log("🔧 Server config:", serverConfig);
+  const finishLogin = async (pwd = "") => {
+    const { login } = useAuthStore.getState();
+    const ok = await login({ usr: email.trim(), pwd });
+    if (ok) {
+      await rememberUsername();
+      router.replace("/(tabs)");
+      return true;
+    }
+    setError("Authentication failed");
+    Alert.alert("Error", "Authentication failed");
+    return false;
+  };
 
+  const handlePasswordLogin = async () => {
     if (!email.trim()) {
-      Alert.alert("Error", "Please enter your email address");
+      Alert.alert("Error", "Please enter your username or email");
       return;
     }
-
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      Alert.alert("Error", "Please enter a valid email address");
+    if (!password) {
+      Alert.alert("Error", "Please enter your password");
       return;
     }
-
-    // Check if server is configured
-    if (!serverConfig.serverUrl) {
-      console.log("❌ No server URL configured");
+    if (!serverConfig.serverUrl?.trim()) {
       Alert.alert(
         "Server Not Configured",
-        "Please configure your ERPNext server in Settings before logging in."
+        "Tap the server row below (⚙️) to enter your ERPNext URL before logging in."
       );
       return;
     }
 
-    console.log("✅ Server configured, requesting OTP...");
     setIsLoading(true);
     setError("");
-
     try {
-      const result = await oauthApi.requestOTP(email, "email");
-
-      console.log("📧 OTP request result:", result);
-
-      if (result.success) {
-        // Clear any previous OTP - will be set when received from email
-        setDisplayedOTP("");
-        setReceivedOTP("");
-        // Remember this email for next time (per server)
-        try {
-          const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
-          await AsyncStorage.setItem(key, email.trim().toLowerCase());
-        } catch {}
-        setCurrentStep("otp");
-        Alert.alert(
-          "OTP Sent",
-          `A 6-digit code has been sent to ${email}. Please check your email and copy the OTP.`
-        );
+      http.setBaseUrl(serverConfig.serverUrl);
+      const result = await oauthApi.loginWithPassword(email.trim(), password);
+      if (result.success && result.data) {
+        await finishLogin(password);
       } else {
-        setError(result.error || "Failed to send OTP");
-        Alert.alert("Error", result.error || "Failed to send OTP");
+        setError(result.error || "Login failed");
+        Alert.alert(
+          "Login Failed",
+          result.error || "Invalid username or password"
+        );
       }
-    } catch (error) {
-      console.error("❌ OTP request error:", error);
+    } catch (err) {
+      console.error("❌ Password login error:", err);
       setError("Network error. Please try again.");
       Alert.alert("Error", "Network error. Please try again.");
     } finally {
@@ -162,9 +149,52 @@ export default function LoginScreen() {
     }
   };
 
-  const handleOTPSubmit = async (enteredOtp: string) => {
-    console.log("🔐 OTP Submit called with:", enteredOtp);
+  const handleDemoContinue = async () => {
+    if (!email.trim()) {
+      Alert.alert("Error", "Please enter your email address");
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      Alert.alert("Error", "Please enter a valid email address");
+      return;
+    }
 
+    setIsLoading(true);
+    setError("");
+    try {
+      const result = await oauthApi.requestOTP(email, "email");
+      if (result.success) {
+        setDisplayedOTP("");
+        setReceivedOTP("");
+        await rememberUsername();
+        setCurrentStep("otp");
+        Alert.alert(
+          "Demo mode",
+          "No email is sent. Enter any 6 digits (for example 123456) to sign in."
+        );
+      } else {
+        setError(result.error || "Failed to continue");
+        Alert.alert("Error", result.error || "Failed to continue");
+      }
+    } catch (err) {
+      console.error("❌ Demo continue error:", err);
+      setError("Something went wrong. Please try again.");
+      Alert.alert("Error", "Something went wrong. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCredentialsSubmit = async () => {
+    if (demoMode) {
+      await handleDemoContinue();
+    } else {
+      await handlePasswordLogin();
+    }
+  };
+
+  const handleOTPSubmit = async (enteredOtp: string) => {
     if (enteredOtp.length !== 6) {
       setError("Please enter a valid 6-digit OTP");
       return;
@@ -172,52 +202,16 @@ export default function LoginScreen() {
 
     setIsLoading(true);
     setError("");
-
     try {
-      console.log("🔄 Calling exchangeOTPForToken...");
       const result = await oauthApi.exchangeOTPForToken(email, enteredOtp);
-
-      console.log("📥 OTP exchange result:", result);
-
       if (result.success && result.data) {
-        console.log("✅ OTP exchange successful, calling auth store login...");
-
-        // Store user info in auth store
-        const { login } = useAuthStore.getState();
-        const loginResult = await login({ usr: email, pwd: "" }); // OAuth doesn't need password
-
-        console.log("🏪 Auth store login result:", loginResult);
-
-        if (loginResult) {
-          // Ensure email is remembered
-          try {
-            const key = `lastUsername:${serverConfig?.serverUrl || "default"}`;
-            await AsyncStorage.setItem(key, email.trim().toLowerCase());
-          } catch {}
-          console.log("🎉 Login successful, navigating to tabs...");
-          Alert.alert("Success", "Login successful!");
-          router.replace("/(tabs)");
-        } else {
-          console.log("❌ Auth store login failed");
-          setError("Authentication failed");
-          Alert.alert("Error", "Authentication failed");
-        }
+        await finishLogin("");
       } else {
-        console.log("❌ OTP exchange failed:", result.error);
         setError(result.error || "Invalid OTP");
-
-        // Show specific error message based on the error
-        let alertMessage = result.error || "Invalid OTP";
-        if (result.error?.includes("expired")) {
-          alertMessage = "OTP has expired. Please request a new one.";
-        } else if (result.error?.includes("Invalid")) {
-          alertMessage = "Invalid OTP. Please check the code and try again.";
-        }
-
-        Alert.alert("OTP Error", alertMessage);
+        Alert.alert("OTP Error", result.error || "Invalid OTP");
       }
-    } catch (error) {
-      console.error("❌ OTP submit error:", error);
+    } catch (err) {
+      console.error("❌ OTP submit error:", err);
       setError("Network error. Please try again.");
       Alert.alert("Error", "Network error. Please try again.");
     } finally {
@@ -228,23 +222,30 @@ export default function LoginScreen() {
   const handleResendOTP = async () => {
     setIsLoading(true);
     setError("");
-
     try {
-      const result = await oauthApi.requestOTP(email, "email");
+      if (isDemoMode()) {
+        setDisplayedOTP("");
+        setReceivedOTP("");
+        Alert.alert(
+          "Demo mode",
+          "No email is sent in demo. Enter any 6 digits (for example 123456) to sign in."
+        );
+        return;
+      }
 
+      const result = await oauthApi.requestOTP(email, "email");
       if (result.success) {
-        // Clear any previous OTP - will be set when received from email
         setDisplayedOTP("");
         setReceivedOTP("");
         Alert.alert(
           "OTP Resent",
-          "A new 6-digit code has been sent to your email. Please check your email and copy the OTP."
+          "A new 6-digit code has been sent to your email."
         );
       } else {
         setError(result.error || "Failed to resend OTP");
         Alert.alert("Error", result.error || "Failed to resend OTP");
       }
-    } catch (error) {
+    } catch {
       setError("Network error. Please try again.");
       Alert.alert("Error", "Network error. Please try again.");
     } finally {
@@ -255,66 +256,17 @@ export default function LoginScreen() {
   const handleOTPClick = () => {
     if (displayedOTP) {
       setReceivedOTP(displayedOTP);
-      Alert.alert(
-        "OTP Filled",
-        `OTP ${displayedOTP} has been filled automatically.`
-      );
+      Alert.alert("OTP Filled", `OTP ${displayedOTP} has been filled automatically.`);
     }
-  };
-
-  const handleOpenEmail = async () => {
-    try {
-      // Try to open default email app
-      const emailUrl = `mailto:${email}`;
-      const canOpen = await Linking.canOpenURL(emailUrl);
-
-      if (canOpen) {
-        await Linking.openURL(emailUrl);
-        Alert.alert(
-          "Email Opened",
-          "Please copy the 6-digit OTP from your email and return to this app. The OTP will be detected automatically.",
-          [{ text: "OK", style: "default" }]
-        );
-      } else {
-        Alert.alert(
-          "Email App Not Found",
-          "Please check your email manually and copy the 6-digit OTP code."
-        );
-      }
-    } catch (error) {
-      console.error("Error opening email:", error);
-      Alert.alert(
-        "Error",
-        "Could not open email app. Please check your email manually."
-      );
-    }
-  };
-
-  const handleManualOTPEntry = () => {
-    Alert.alert(
-      "Manual OTP Entry",
-      "Please enter the 6-digit OTP code you received in your email.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "OK",
-          style: "default",
-          onPress: () => {
-            // Focus on first OTP input
-            // This will be handled by the OTPInput component
-          },
-        },
-      ]
-    );
   };
 
   const handleBackToEmail = () => {
-    setCurrentStep("email");
-    setOtp("");
+    setCurrentStep("credentials");
     setError("");
   };
 
   const getServerDisplay = () => {
+    if (isDemoMode()) return "Demo Server (sample data)";
     return serverConfig.serverUrl || "No server configured";
   };
 
@@ -335,170 +287,231 @@ export default function LoginScreen() {
           contentContainerStyle={styles.scrollContainer}
         >
           <View style={styles.content}>
-            {/* Logo/Title */}
             <View style={styles.header}>
-            <View style={styles.logoContainer}>
-              <Image 
-                source={require("../../assets/icon.png")} 
-                style={styles.logoImage}
-                resizeMode="contain"
-              />
+              <View style={styles.logoContainer}>
+                <Image
+                  source={require("../../assets/icon.png")}
+                  style={styles.logoImage}
+                  resizeMode="contain"
+                />
+              </View>
+              <Text style={styles.title}>Printechs ERP Application</Text>
+              <Text style={styles.subtitle}>Analytics & Approvals</Text>
             </View>
-            <Text style={styles.title}>Printechs ERP Application</Text>
-            <Text style={styles.subtitle}>Analytics & Approvals</Text>
-          </View>
 
-          {/* Login Form */}
-          <View style={styles.formContainer}>
-            <View style={styles.card}>
-              {currentStep === "email" ? (
-                <>
-                  <Text style={styles.welcomeText}>Welcome Back</Text>
-                  <Text style={styles.instructionText}>
-                    Enter your email to receive OTP
-                  </Text>
+            <View style={styles.formContainer}>
+              <View style={styles.card}>
+                {currentStep === "credentials" ? (
+                  <>
+                    <Text style={styles.welcomeText}>Welcome Back</Text>
+                    <Text style={styles.instructionText}>
+                      {demoMode
+                        ? "Demo mode: enter any email, then any 6-digit code (no real email is sent)."
+                        : "Sign in with your ERPNext username and password"}
+                    </Text>
 
-                  {/* Email Input */}
-                  <View style={styles.inputContainer}>
-                    <Ionicons
-                      name="mail-outline"
-                      size={20}
-                      color="#9ca3af"
-                      style={styles.inputIcon}
-                    />
-                    <TextInput
-                      style={styles.input}
-                      placeholder="Email Address"
-                      placeholderTextColor="#9ca3af"
-                      value={email}
-                      onChangeText={setEmail}
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      autoComplete="email"
-                    />
-                  </View>
+                    <View style={styles.inputContainer}>
+                      <Ionicons
+                        name="mail-outline"
+                        size={20}
+                        color="#9ca3af"
+                        style={styles.inputIcon}
+                      />
+                      <TextInput
+                        style={styles.input}
+                        placeholder={
+                          demoMode ? "Email Address" : "Username or Email"
+                        }
+                        placeholderTextColor="#9ca3af"
+                        value={email}
+                        onChangeText={setEmail}
+                        keyboardType="email-address"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        autoComplete="email"
+                      />
+                    </View>
 
-                  {/* Login Button */}
-                  <TouchableOpacity
-                    style={[
-                      styles.loginButton,
-                      isLoading && styles.loginButtonDisabled,
-                    ]}
-                    onPress={handleEmailSubmit}
-                    disabled={isLoading}
-                  >
-                    <LinearGradient
-                      colors={["#667eea", "#764ba2"]}
-                      style={styles.loginGradient}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
-                    >
-                      <Text style={styles.loginButtonText}>
-                        {isLoading ? "Sending OTP..." : "Send OTP"}
-                      </Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.welcomeText}>Enter OTP</Text>
-                  <Text style={styles.instructionText}>
-                    We've sent a 6-digit code to {email}
-                  </Text>
-
-                  {/* Display OTP for easy access - Only show when received from email */}
-                  {receivedOTP && (
-                    <View style={styles.otpDisplayContainer}>
-                      <Text style={styles.otpDisplayLabel}>Your OTP Code:</Text>
-                      <TouchableOpacity
-                        style={styles.otpDisplayButton}
-                        onPress={handleOTPClick}
-                        disabled={isLoading}
-                      >
-                        <Text style={styles.otpDisplayText}>{receivedOTP}</Text>
+                    {!demoMode && (
+                      <View style={styles.inputContainer}>
                         <Ionicons
-                          name="copy-outline"
+                          name="lock-closed-outline"
                           size={20}
-                          color="#007AFF"
+                          color="#9ca3af"
+                          style={styles.inputIcon}
                         />
-                      </TouchableOpacity>
-                      <Text style={styles.otpDisplayHint}>
-                        Tap the code above to auto-fill
-                      </Text>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="Password"
+                          placeholderTextColor="#9ca3af"
+                          value={password}
+                          onChangeText={setPassword}
+                          secureTextEntry={!showPassword}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          autoComplete="password"
+                        />
+                        <TouchableOpacity
+                          onPress={() => setShowPassword((v) => !v)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons
+                            name={showPassword ? "eye-off-outline" : "eye-outline"}
+                            size={20}
+                            color="#9ca3af"
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {!!error && !demoMode && (
+                      <Text style={styles.inlineError}>{error}</Text>
+                    )}
+
+                    <TouchableOpacity
+                      style={[
+                        styles.loginButton,
+                        isLoading && styles.loginButtonDisabled,
+                      ]}
+                      onPress={handleCredentialsSubmit}
+                      disabled={isLoading}
+                    >
+                      <LinearGradient
+                        colors={["#667eea", "#764ba2"]}
+                        style={styles.loginGradient}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                      >
+                        <Text style={styles.loginButtonText}>
+                          {isLoading
+                            ? demoMode
+                              ? "Continuing..."
+                              : "Signing in..."
+                            : demoMode
+                              ? "Continue"
+                              : "Login"}
+                        </Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.welcomeText}>Enter OTP</Text>
+                    <Text style={styles.instructionText}>
+                      {demoMode
+                        ? `Demo: no message was sent to ${email}. Type any 6 digits below.`
+                        : `We've sent a 6-digit code to ${email}`}
+                    </Text>
+
+                    {demoMode && (
+                      <View style={styles.demoOtpHint}>
+                        <Ionicons
+                          name="information-circle"
+                          size={22}
+                          color="#4f46e5"
+                        />
+                        <Text style={styles.demoOtpHintText}>
+                          Example codes that work:{" "}
+                          <Text style={styles.demoOtpMono}>123456</Text> or{" "}
+                          <Text style={styles.demoOtpMono}>000000</Text>
+                        </Text>
+                      </View>
+                    )}
+
+                    {receivedOTP ? (
+                      <View style={styles.otpDisplayContainer}>
+                        <Text style={styles.otpDisplayLabel}>Your OTP Code:</Text>
+                        <TouchableOpacity
+                          style={styles.otpDisplayButton}
+                          onPress={handleOTPClick}
+                          disabled={isLoading}
+                        >
+                          <Text style={styles.otpDisplayText}>{receivedOTP}</Text>
+                          <Ionicons name="copy-outline" size={20} color="#007AFF" />
+                        </TouchableOpacity>
+                        <Text style={styles.otpDisplayHint}>
+                          Tap the code above to auto-fill
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.otpInstructionsContainer}>
+                      {demoMode ? (
+                        <>
+                          <Text style={styles.otpInstructionsText}>
+                            No inbox check needed — demo uses sample data only.
+                          </Text>
+                          <Text style={styles.otpInstructionsSubtext}>
+                            Connect a real server URL in server settings to use
+                            email OTP.
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.otpInstructionsText}>
+                            Check your email for the 6-digit OTP code
+                          </Text>
+                          <Text style={styles.otpInstructionsSubtext}>
+                            The code expires in 5 minutes
+                          </Text>
+                        </>
+                      )}
                     </View>
-                  )}
 
-                  {/* Simple instructions */}
-                  <View style={styles.otpInstructionsContainer}>
-                    <Text style={styles.otpInstructionsText}>
-                      📧 Check your email for the 6-digit OTP code
-                    </Text>
-                    <Text style={styles.otpInstructionsSubtext}>
-                      The code expires in 5 minutes
-                    </Text>
-                  </View>
+                    <OTPInput
+                      length={6}
+                      onComplete={handleOTPSubmit}
+                      onResend={handleResendOTP}
+                      disabled={isLoading}
+                      error={error}
+                      receivedOTP={receivedOTP}
+                      displayOTP={receivedOTP}
+                    />
 
-                  {/* OTP Input */}
-                  <OTPInput
-                    length={6}
-                    onComplete={handleOTPSubmit}
-                    onResend={handleResendOTP}
-                    disabled={isLoading}
-                    error={error}
-                    receivedOTP={receivedOTP}
-                    displayOTP={receivedOTP}
-                  />
+                    <TouchableOpacity
+                      style={styles.backButton}
+                      onPress={handleBackToEmail}
+                      disabled={isLoading}
+                    >
+                      <Ionicons name="arrow-back" size={20} color="#667eea" />
+                      <Text style={styles.backButtonText}>Change Email</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
 
-                  {/* Back to Email Button */}
+                {currentStep === "credentials" && (
                   <TouchableOpacity
-                    style={styles.backButton}
-                    onPress={handleBackToEmail}
-                    disabled={isLoading}
+                    style={styles.serverContainer}
+                    onPress={() => setShowServerConfig(true)}
                   >
-                    <Ionicons name="arrow-back" size={20} color="#667eea" />
-                    <Text style={styles.backButtonText}>Change Email</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-
-              {/* Server Info - Hidden on OTP screen */}
-              {currentStep === "email" && (
-                <TouchableOpacity
-                  style={styles.serverContainer}
-                  onPress={() => setShowServerConfig(true)}
-                >
-                  <View style={styles.serverInfo}>
-                    <Ionicons name="server-outline" size={16} color="#667eea" />
-                    <View style={styles.serverTextContainer}>
-                      <Text style={styles.serverLabel}>Server:</Text>
-                      <Text style={styles.serverText} numberOfLines={1}>
-                        {getServerDisplay()}
-                      </Text>
+                    <View style={styles.serverInfo}>
+                      <Ionicons name="server-outline" size={16} color="#667eea" />
+                      <View style={styles.serverTextContainer}>
+                        <Text style={styles.serverLabel}>Server:</Text>
+                        <Text style={styles.serverText} numberOfLines={1}>
+                          {getServerDisplay()}
+                        </Text>
+                      </View>
                     </View>
+                    <Ionicons name="settings-outline" size={20} color="#667eea" />
+                  </TouchableOpacity>
+                )}
+
+                {currentStep === "credentials" && demoMode && (
+                  <View style={styles.demoContainer}>
+                    <Text style={styles.demoText}>
+                      Demo uses sample data. Tap Server to enter your ERPNext URL
+                      for live data.
+                    </Text>
                   </View>
-                  <Ionicons name="settings-outline" size={20} color="#667eea" />
-                </TouchableOpacity>
-              )}
-
-              {/* Demo Info - Hidden on OTP screen */}
-              {currentStep === "email" && (
-                <View style={styles.demoContainer}>
-                  <Text style={styles.demoText}>
-                    Demo: Use your registered email address
-                  </Text>
-                </View>
-              )}
+                )}
+              </View>
             </View>
-          </View>
-
-          {/* Footer */}
           </View>
           <Text style={styles.footer}>Powered by Printechs</Text>
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Server Configuration Modal */}
       <Modal
         visible={showServerConfig}
         animationType="slide"
@@ -525,12 +538,8 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  keyboardView: {
-    flex: 1,
-  },
+  container: { flex: 1 },
+  keyboardView: { flex: 1 },
   scrollContainer: {
     flexGrow: 1,
     justifyContent: "space-between",
@@ -538,14 +547,8 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingBottom: Platform.OS === "ios" ? 160 : 80,
   },
-  content: {
-    flex: 1,
-    justifyContent: "space-between",
-  },
-  header: {
-    alignItems: "center",
-    marginTop: 24,
-  },
+  content: { flex: 1, justifyContent: "space-between" },
+  header: { alignItems: "center", marginTop: 24 },
   logoContainer: {
     width: 140,
     height: 140,
@@ -561,25 +564,15 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 8,
   },
-  logoImage: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-  },
+  logoImage: { width: 120, height: 120, borderRadius: 60 },
   title: {
     fontSize: 32,
     fontWeight: "bold",
     color: "#ffffff",
     marginBottom: 8,
   },
-  subtitle: {
-    fontSize: 16,
-    color: "rgba(255, 255, 255, 0.9)",
-  },
-  formContainer: {
-    flex: 1,
-    justifyContent: "center",
-  },
+  subtitle: { fontSize: 16, color: "rgba(255, 255, 255, 0.9)" },
+  formContainer: { flex: 1, justifyContent: "center" },
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 24,
@@ -602,24 +595,10 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     textAlign: "center",
   },
-  otpHelpContainer: {
-    backgroundColor: "#f0f8ff",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 24,
-    borderLeftWidth: 4,
-    borderLeftColor: "#007AFF",
-  },
-  otpHelpText: {
-    fontSize: 14,
-    color: "#007AFF",
-    fontWeight: "600",
-    textAlign: "center",
-    marginBottom: 4,
-  },
-  otpHelpSubtext: {
-    fontSize: 12,
-    color: "#6b7280",
+  inlineError: {
+    color: "#dc2626",
+    fontSize: 13,
+    marginBottom: 8,
     textAlign: "center",
   },
   otpDisplayContainer: {
@@ -647,11 +626,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#007AFF",
     marginBottom: 8,
-    shadowColor: "#007AFF",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
   },
   otpDisplayText: {
     fontSize: 24,
@@ -665,6 +639,29 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     textAlign: "center",
     fontStyle: "italic",
+  },
+  demoOtpHint: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "#eef2ff",
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#c7d2fe",
+  },
+  demoOtpHintText: {
+    flex: 1,
+    fontSize: 14,
+    color: "#3730a3",
+    lineHeight: 20,
+    fontWeight: "500",
+  },
+  demoOtpMono: {
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontWeight: "700",
+    color: "#1e1b4b",
   },
   otpInstructionsContainer: {
     backgroundColor: "#f0f8ff",
@@ -695,31 +692,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     height: 56,
   },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    fontSize: 16,
-    color: "#1f2937",
-  },
-  loginButton: {
-    borderRadius: 12,
-    overflow: "hidden",
-    marginTop: 8,
-  },
-  loginButtonDisabled: {
-    opacity: 0.6,
-  },
-  loginGradient: {
-    paddingVertical: 16,
-    alignItems: "center",
-  },
-  loginButtonText: {
-    color: "#ffffff",
-    fontSize: 18,
-    fontWeight: "bold",
-  },
+  inputIcon: { marginRight: 12 },
+  input: { flex: 1, fontSize: 16, color: "#1f2937" },
+  loginButton: { borderRadius: 12, overflow: "hidden", marginTop: 8 },
+  loginButtonDisabled: { opacity: 0.6 },
+  loginGradient: { paddingVertical: 16, alignItems: "center" },
+  loginButtonText: { color: "#ffffff", fontSize: 18, fontWeight: "bold" },
   backButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -750,39 +728,23 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 8,
   },
-  serverTextContainer: {
-    flex: 1,
-  },
-  serverLabel: {
-    fontSize: 11,
-    color: "#6b7280",
-    fontWeight: "600",
-  },
+  serverTextContainer: { flex: 1 },
+  serverLabel: { fontSize: 11, color: "#6b7280", fontWeight: "600" },
   serverText: {
     fontSize: 12,
     color: "#374151",
     fontWeight: "500",
     marginTop: 2,
   },
-  demoContainer: {
-    marginTop: 16,
-    alignItems: "center",
-  },
-  demoText: {
-    fontSize: 12,
-    color: "#9ca3af",
-    textAlign: "center",
-  },
+  demoContainer: { marginTop: 16, alignItems: "center" },
+  demoText: { fontSize: 12, color: "#9ca3af", textAlign: "center" },
   footer: {
     textAlign: "center",
     color: "rgba(255, 255, 255, 0.8)",
     fontSize: 14,
     marginBottom: 20,
   },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: "#f9fafb",
-  },
+  modalContainer: { flex: 1, backgroundColor: "#f9fafb" },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -792,15 +754,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#e5e7eb",
   },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#1f2937",
-  },
-  closeButton: {
-    padding: 4,
-  },
-  modalContent: {
-    flex: 1,
-  },
+  modalTitle: { fontSize: 18, fontWeight: "700", color: "#1f2937" },
+  closeButton: { padding: 4 },
+  modalContent: { flex: 1 },
 });

@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { erpApi } from "../api/erp";
-import { USE_MOCK_DATA, mockApprovals } from "../api/mock";
+import { shouldUseMockData, mockApprovals } from "../api/mock";
 
 export const useApprovalsInbox = () => {
   return useQuery({
     queryKey: ["approvals", "inbox"],
     queryFn: async () => {
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         await new Promise((resolve) => setTimeout(resolve, 700));
         return mockApprovals;
       }

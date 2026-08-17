@@ -12,10 +12,16 @@ import { router } from "expo-router";
 import { useEmployeesList } from "../../src/hooks/useOptimizedApis";
 import { LoadingScreen } from "../../src/components/LoadingScreen";
 import { Ionicons } from "@expo/vector-icons";
+import { useAuthStore } from "../../src/store/auth";
+import { isDimensionEnabled } from "../../src/api/mobileConfig";
 
 export default function EmployeesScreen() {
   const { data: employees, isLoading, refetch } = useEmployeesList();
   const [refreshing, setRefreshing] = React.useState(false);
+  const showDepartment = isDimensionEnabled(
+    useAuthStore((s) => s.mobileConfig),
+    "department"
+  );
 
   // Debug: Log employee data
   React.useEffect(() => {
@@ -67,7 +73,9 @@ export default function EmployeesScreen() {
               <Text style={styles.designation}>
                 {item.designation || "N/A"}
               </Text>
-              <Text style={styles.department}>{item.department || "N/A"}</Text>
+              {showDepartment && !!item.department && (
+                <Text style={styles.department}>{item.department}</Text>
+              )}
               {item.cell_number && (
                 <Text style={styles.contact}>{item.cell_number}</Text>
               )}

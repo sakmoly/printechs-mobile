@@ -10,6 +10,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { SafeScreen } from "../src/components/SafeScreen";
 import {
   useInventorySnapshot,
   useInventoryPerformance,
@@ -17,232 +18,50 @@ import {
   useInventoryRisk,
   useInventoryHierarchy,
 } from "../src/hooks/useOptimizedApis";
+import { useAuthStore } from "../src/store/auth";
+import { resolveCompanyName } from "../src/api/apiResilience";
 
 const { width } = Dimensions.get("window");
 
 type TabType = "snapshot" | "performance" | "trend" | "risk";
 
-// Mock Data
-const MOCK_DATA = {
+/** Empty shells only — never invented inventory figures on live */
+const EMPTY_INVENTORY = {
   snapshot: {
-    totalInventoryValue: 12500000,
-    inventoryTurnoverRatio: 4.5,
-    averageDaysInInventory: 81,
-    agingBreakdown: [
-      { period: "0-30 Days", value: 8500000, percentage: 68.0 },
-      { period: "31-60 Days", value: 2500000, percentage: 20.0 },
-      { period: "61-90 Days", value: 1000000, percentage: 8.0 },
-      { period: "91-180 Days", value: 400000, percentage: 3.2 },
-      { period: "181-365 Days", value: 50000, percentage: 0.4 },
-      { period: "Over 365 Days", value: 50000, percentage: 0.4 },
-    ],
-    inventoryByCategory: [
-      { category: "Electronics", value: 5000000, percentage: 40.0 },
-      { category: "Office Supplies", value: 3750000, percentage: 30.0 },
-      { category: "Accessories", value: 3750000, percentage: 30.0 },
-    ],
+    totalInventoryValue: 0,
+    inventoryTurnoverRatio: 0,
+    averageDaysInInventory: 0,
+    agingBreakdown: [] as {
+      period: string;
+      value: number;
+      percentage: number;
+    }[],
+    inventoryByCategory: [] as {
+      category: string;
+      value: number;
+      percentage: number;
+    }[],
   },
   performance: {
-    fastMovingItems: [
-      {
-        itemCode: "ITEM-001",
-        itemName: "Laptop Dell XPS",
-        quantity: 1500,
-        value: 75000,
-      },
-      {
-        itemCode: "ITEM-002",
-        itemName: "Mouse Wireless",
-        quantity: 1200,
-        value: 24000,
-      },
-      {
-        itemCode: "ITEM-003",
-        itemName: "Keyboard Mechanical",
-        quantity: 950,
-        value: 28500,
-      },
-    ],
-    slowMovingItems: [
-      {
-        itemCode: "ITEM-101",
-        itemName: "Old Printer",
-        quantity: 50,
-        value: 2500,
-        daysSinceLastMovement: 120,
-      },
-      {
-        itemCode: "ITEM-102",
-        itemName: "Legacy Scanner",
-        quantity: 30,
-        value: 1500,
-        daysSinceLastMovement: 180,
-      },
-      {
-        itemCode: "ITEM-103",
-        itemName: "Vintage Keyboard",
-        quantity: 20,
-        value: 800,
-        daysSinceLastMovement: 200,
-      },
-    ],
-    reorderAlerts: [
-      {
-        itemCode: "ITEM-201",
-        itemName: "USB Cable",
-        currentStock: 10,
-        reorderLevel: 50,
-        shortage: 40,
-      },
-      {
-        itemCode: "ITEM-202",
-        itemName: "HDMI Cable",
-        currentStock: 15,
-        reorderLevel: 60,
-        shortage: 45,
-      },
-    ],
-    overstockAlerts: [
-      {
-        itemCode: "ITEM-301",
-        itemName: "Monitor Stand",
-        currentStock: 500,
-        maxStockLevel: 200,
-        excess: 300,
-      },
-      {
-        itemCode: "ITEM-302",
-        itemName: "Cable Organizer",
-        currentStock: 350,
-        maxStockLevel: 150,
-        excess: 200,
-      },
-    ],
+    fastMovingItems: [] as any[],
+    slowMovingItems: [] as any[],
+    reorderAlerts: [] as any[],
+    overstockAlerts: [] as any[],
   },
   trend: {
-    movementInOut: [
-      {
-        month: "Jan",
-        inQuantity: 5000,
-        outQuantity: 4500,
-        inValue: 250000,
-        outValue: 225000,
-      },
-      {
-        month: "Feb",
-        inQuantity: 5200,
-        outQuantity: 4800,
-        inValue: 260000,
-        outValue: 240000,
-      },
-      {
-        month: "Mar",
-        inQuantity: 4800,
-        outQuantity: 5000,
-        inValue: 240000,
-        outValue: 250000,
-      },
-      {
-        month: "Apr",
-        inQuantity: 5500,
-        outQuantity: 5200,
-        inValue: 275000,
-        outValue: 260000,
-      },
-      {
-        month: "May",
-        inQuantity: 5100,
-        outQuantity: 4800,
-        inValue: 255000,
-        outValue: 240000,
-      },
-      {
-        month: "Jun",
-        inQuantity: 5300,
-        outQuantity: 5100,
-        inValue: 265000,
-        outValue: 255000,
-      },
-    ],
-    inventoryValueTrend: [
-      { month: "Jan", value: 12000000 },
-      { month: "Feb", value: 12200000 },
-      { month: "Mar", value: 12150000 },
-      { month: "Apr", value: 12350000 },
-      { month: "May", value: 12400000 },
-      { month: "Jun", value: 12500000 },
-    ],
-    stockByWarehouse: [
-      { warehouse: "Main Warehouse", value: 7500000, percentage: 60.0 },
-      { warehouse: "Secondary Warehouse", value: 3500000, percentage: 28.0 },
-      { warehouse: "Store Room", value: 1500000, percentage: 12.0 },
-    ],
+    movementInOut: [] as any[],
+    inventoryValueTrend: [] as { month: string; value: number }[],
+    stockByWarehouse: [] as {
+      warehouse: string;
+      value: number;
+      percentage: number;
+    }[],
   },
   risk: {
-    nonMovingItems: [
-      {
-        itemCode: "ITEM-501",
-        itemName: "Outdated CPU",
-        warehouse: "Main Warehouse",
-        quantity: 100,
-        value: 10000,
-        daysSinceLastMovement: 180,
-      },
-      {
-        itemCode: "ITEM-502",
-        itemName: "Old RAM Modules",
-        warehouse: "Main Warehouse",
-        quantity: 200,
-        value: 8000,
-        daysSinceLastMovement: 220,
-      },
-      {
-        itemCode: "ITEM-503",
-        itemName: "Legacy HDD",
-        warehouse: "Store Room",
-        quantity: 150,
-        value: 4500,
-        daysSinceLastMovement: 300,
-      },
-    ],
-    agingSummary: [
-      { bucket: "0-30 Days", itemCount: 250, totalValue: 8500000 },
-      { bucket: "31-60 Days", itemCount: 150, totalValue: 2500000 },
-      { bucket: "61-90 Days", itemCount: 80, totalValue: 1000000 },
-      { bucket: "91-180 Days", itemCount: 40, totalValue: 400000 },
-      { bucket: "181-365 Days", itemCount: 20, totalValue: 50000 },
-      { bucket: "Over 365 Days", itemCount: 10, totalValue: 50000 },
-    ],
-    criticalShortage: [
-      {
-        itemCode: "ITEM-201",
-        itemName: "USB Cable",
-        currentStock: 10,
-        safetyStock: 50,
-      },
-      {
-        itemCode: "ITEM-601",
-        itemName: "Power Adapter",
-        currentStock: 8,
-        safetyStock: 40,
-      },
-    ],
-    overstock: [
-      {
-        itemCode: "ITEM-301",
-        itemName: "Monitor Stand",
-        currentStock: 500,
-        maxStock: 200,
-        excessValue: 120000,
-      },
-      {
-        itemCode: "ITEM-302",
-        itemName: "Cable Organizer",
-        currentStock: 350,
-        maxStock: 150,
-        excessValue: 80000,
-      },
-    ],
+    nonMovingItems: [] as any[],
+    agingSummary: [] as any[],
+    criticalShortage: [] as any[],
+    overstock: [] as any[],
   },
 };
 
@@ -253,13 +72,83 @@ type DrillDownLevel =
   | "item"
   | "warehouse";
 
+/** Territory card path: Territory → Warehouse → Brand → Item Group → Item */
+type TerritoryDrillLevel =
+  | "territory"
+  | "warehouse"
+  | "brand"
+  | "item_group"
+  | "item";
+
+const TERRITORY_LEVEL_FLOW: TerritoryDrillLevel[] = [
+  "territory",
+  "warehouse",
+  "brand",
+  "item_group",
+  "item",
+];
+
 interface Breadcrumb {
   level: DrillDownLevel;
   label: string;
   value: string;
 }
 
+interface TerritoryBreadcrumb {
+  level: TerritoryDrillLevel;
+  label: string;
+  value: string;
+}
+
+function normalizeHierarchyRows(data: unknown): any[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  const o = data as Record<string, unknown>;
+  if (Array.isArray(o.rows)) return o.rows;
+  if (Array.isArray(o.data)) return o.data;
+  if (Array.isArray(o.items)) return o.items;
+  if (Array.isArray(o.results)) return o.results;
+  if (Array.isArray(o.message)) return o.message as any[];
+  return [];
+}
+
+function hierarchyRowId(item: any, level: string): string {
+  const v =
+    item?.id ??
+    item?.name ??
+    item?.[level] ??
+    item?.territory ??
+    item?.warehouse ??
+    item?.brand ??
+    item?.item_group ??
+    item?.item_code ??
+    item?.category;
+  return String(v ?? "").trim();
+}
+
+function hierarchyRowName(item: any, level: string): string {
+  const v =
+    item?.name ??
+    item?.item_name ??
+    item?.id ??
+    item?.[level] ??
+    item?.territory ??
+    item?.warehouse ??
+    item?.brand ??
+    item?.item_group ??
+    item?.item_code ??
+    "Unknown";
+  return String(v ?? "Unknown").trim() || "Unknown";
+}
+
 export default function InventoryDashboardScreen() {
+  const user = useAuthStore((s) => s.user);
+  const permissions = useAuthStore((s) => s.permissions);
+  const company = resolveCompanyName(
+    permissions.scope?.company,
+    user?.company
+  );
+
   const [activeTab, setActiveTab] = useState<TabType>("snapshot");
   const [drillDownLevel, setDrillDownLevel] = useState<DrillDownLevel | null>(
     null
@@ -272,12 +161,35 @@ export default function InventoryDashboardScreen() {
   }>({});
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
 
-  const handleTabPress = (tab: TabType) => {
-    setActiveTab(tab);
-    // Reset drill-down when switching tabs
+  // Separate drill stack for Inventory by Territory card
+  const [terrLevel, setTerrLevel] = useState<TerritoryDrillLevel | null>(null);
+  const [terrFilters, setTerrFilters] = useState<{
+    territory?: string;
+    warehouse?: string;
+    brand?: string;
+    item_group?: string;
+  }>({});
+  const [terrBreadcrumbs, setTerrBreadcrumbs] = useState<TerritoryBreadcrumb[]>(
+    []
+  );
+
+  const resetCategoryDrill = () => {
     setDrillDownLevel(null);
     setDrillDownFilters({});
     setBreadcrumbs([]);
+  };
+
+  const resetTerritoryDrill = () => {
+    setTerrLevel(null);
+    setTerrFilters({});
+    setTerrBreadcrumbs([]);
+  };
+
+  const handleTabPress = (tab: TabType) => {
+    setActiveTab(tab);
+    // Reset drill-down when switching tabs
+    resetCategoryDrill();
+    resetTerritoryDrill();
   };
 
   const formatCurrency = (value: number) => {
@@ -300,15 +212,13 @@ export default function InventoryDashboardScreen() {
     error: perfError,
     refetch: refetchPerf,
   } = useInventoryPerformance({ limit: 10 });
-  const today = new Date();
-  const year = today.getFullYear();
-  const toIso = (d: Date) => d.toISOString().slice(0, 10);
+  // Server get_inventory_trends accepts months (not from_date/to_date)
   const {
     data: trend,
     isLoading: trendLoading,
     error: trendError,
     refetch: refetchTrend,
-  } = useInventoryTrends({ from_date: `${year}-01-01`, to_date: toIso(today) });
+  } = useInventoryTrends({ months: 12 });
   const {
     data: risk,
     isLoading: riskLoading,
@@ -316,7 +226,7 @@ export default function InventoryDashboardScreen() {
     refetch: refetchRisk,
   } = useInventoryRisk();
 
-  // Fetch drill-down data - only when drill-down is active
+  // Category path drill-down — only when category drill is active
   const {
     data: hierarchyData,
     isLoading: hierarchyLoading,
@@ -325,14 +235,38 @@ export default function InventoryDashboardScreen() {
   } = useInventoryHierarchy(
     drillDownLevel
       ? {
+          company,
           level: drillDownLevel,
           ...drillDownFilters,
         }
       : {
-          level: "category", // Default, but this won't be called if drillDownLevel is null
+          company,
+          level: "category",
         },
     {
-      enabled: drillDownLevel !== null, // Only fetch when drill-down is active
+      enabled: drillDownLevel !== null,
+    }
+  );
+
+  // Territory path — matches BA:
+  // level=territory&company=...
+  // level=warehouse&territory=Jeddah&company=...
+  // level=brand&territory=Jeddah&warehouse=...&company=...
+  const terrQueryLevel: TerritoryDrillLevel = terrLevel ?? "territory";
+  const {
+    data: terrHierarchyData,
+    isLoading: terrHierarchyLoading,
+    error: terrHierarchyError,
+    refetch: refetchTerrHierarchy,
+  } = useInventoryHierarchy(
+    {
+      company,
+      level: terrQueryLevel,
+      ...terrFilters,
+      limit: terrQueryLevel === "item" ? 100 : undefined,
+    },
+    {
+      enabled: activeTab === "snapshot",
     }
   );
 
@@ -358,10 +292,78 @@ export default function InventoryDashboardScreen() {
     refetchPerf();
     refetchTrend();
     refetchRisk();
-    // Reset drill-down
-    setDrillDownLevel(null);
-    setDrillDownFilters({});
-    setBreadcrumbs([]);
+    resetCategoryDrill();
+    resetTerritoryDrill();
+    refetchTerrHierarchy();
+  };
+
+  const nextTerritoryLevel = (
+    current: TerritoryDrillLevel | null
+  ): TerritoryDrillLevel | null => {
+    const from: TerritoryDrillLevel = current ?? "territory";
+    const i = TERRITORY_LEVEL_FLOW.indexOf(from);
+    if (i < 0 || i >= TERRITORY_LEVEL_FLOW.length - 1) return null;
+    return TERRITORY_LEVEL_FLOW[i + 1];
+  };
+
+  const handleTerritoryDrill = (label: string, value: string) => {
+    resetCategoryDrill();
+    const viewing = terrLevel ?? "territory";
+    const next = nextTerritoryLevel(terrLevel);
+    if (!next) return;
+
+    setTerrFilters((prev) => {
+      const nextFilters = { ...prev };
+      if (viewing === "territory") nextFilters.territory = value;
+      else if (viewing === "warehouse") nextFilters.warehouse = value;
+      else if (viewing === "brand") nextFilters.brand = value;
+      else if (viewing === "item_group") nextFilters.item_group = value;
+      return nextFilters;
+    });
+
+    setTerrBreadcrumbs((prev) => {
+      const idx = TERRITORY_LEVEL_FLOW.indexOf(viewing);
+      const kept = prev.filter(
+        (c) => TERRITORY_LEVEL_FLOW.indexOf(c.level) < idx
+      );
+      return [...kept, { level: viewing, label, value }];
+    });
+
+    setTerrLevel(next);
+  };
+
+  const handleTerritoryBack = () => {
+    if (!terrLevel || terrLevel === "warehouse") {
+      resetTerritoryDrill();
+      return;
+    }
+
+    const currentIdx = TERRITORY_LEVEL_FLOW.indexOf(terrLevel);
+    if (currentIdx <= 0) {
+      resetTerritoryDrill();
+      return;
+    }
+
+    const prevView = TERRITORY_LEVEL_FLOW[currentIdx - 1];
+    const newCrumbs = terrBreadcrumbs.filter(
+      (c) => TERRITORY_LEVEL_FLOW.indexOf(c.level) < currentIdx - 1
+    );
+    const newFilters: {
+      territory?: string;
+      warehouse?: string;
+      brand?: string;
+      item_group?: string;
+    } = {};
+    for (const c of newCrumbs) {
+      if (c.level === "territory") newFilters.territory = c.value;
+      if (c.level === "warehouse") newFilters.warehouse = c.value;
+      if (c.level === "brand") newFilters.brand = c.value;
+      if (c.level === "item_group") newFilters.item_group = c.value;
+    }
+
+    setTerrBreadcrumbs(newCrumbs);
+    setTerrFilters(newFilters);
+    setTerrLevel(prevView === "territory" ? null : prevView);
   };
 
   const handleDrillDown = (
@@ -369,6 +371,7 @@ export default function InventoryDashboardScreen() {
     label: string,
     value: string
   ) => {
+    resetTerritoryDrill();
     console.log("🔍 Drill Down:", {
       currentLevel: drillDownLevel,
       nextLevel,
@@ -553,6 +556,154 @@ export default function InventoryDashboardScreen() {
       remainingBreadcrumbs: newBreadcrumbs.length,
     });
   };
+
+  const territorySectionTitle = (): string => {
+    if (!terrLevel || terrLevel === "territory") return "Inventory by Territory";
+    if (terrLevel === "warehouse") return "Warehouses";
+    if (terrLevel === "brand") return "Brands";
+    if (terrLevel === "item_group") return "Item Groups";
+    return "Items";
+  };
+
+  const renderTerritoryRows = () => {
+    if (terrHierarchyLoading) {
+      return (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>Loading...</Text>
+        </View>
+      );
+    }
+    if (terrHierarchyError) {
+      return (
+        <View style={styles.emptyState}>
+          <Text style={[styles.emptyText, { color: "#ef4444" }]}>
+            {terrHierarchyError instanceof Error
+              ? terrHierarchyError.message
+              : "Failed to load territory inventory"}
+          </Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => refetchTerrHierarchy()}
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    const rows = normalizeHierarchyRows(terrHierarchyData).filter((item) => {
+      const id = hierarchyRowId(item, terrQueryLevel);
+      return id && id.toLowerCase() !== "unknown";
+    });
+
+    if (rows.length === 0) {
+      return (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>No stock for this selection</Text>
+        </View>
+      );
+    }
+
+    const sorted = [...rows].sort(
+      (a, b) =>
+        (Number(b.value ?? b.stock_value ?? b.amount) || 0) -
+        (Number(a.value ?? a.stock_value ?? a.amount) || 0)
+    );
+    const canDrill = terrQueryLevel !== "item";
+
+    return (
+      <>
+        {sorted.map((item, index) => {
+          const id = hierarchyRowId(item, terrQueryLevel);
+          const name = hierarchyRowName(item, terrQueryLevel);
+          const value = Number(item.value ?? item.stock_value ?? item.amount) || 0;
+          const pct = Number(item.percentage ?? item.pct) || 0;
+          const qty = item.qty ?? item.actual_qty;
+          return (
+            <TouchableOpacity
+              key={`${id}-${index}`}
+              style={styles.categoryRow}
+              disabled={!canDrill}
+              onPress={() => {
+                if (canDrill) handleTerritoryDrill(name, id);
+              }}
+            >
+              <View style={styles.categoryLeft}>
+                <Text style={styles.categoryName}>{name}</Text>
+                {pct > 0 ? (
+                  <View style={styles.categoryBar}>
+                    <View
+                      style={[
+                        styles.categoryBarFill,
+                        { width: `${Math.min(pct, 100)}%` },
+                      ]}
+                    />
+                  </View>
+                ) : null}
+                {terrQueryLevel === "item" && qty != null ? (
+                  <Text style={styles.drillDownQuantity}>Qty: {qty}</Text>
+                ) : null}
+              </View>
+              <View style={styles.categoryRight}>
+                {pct > 0 ? (
+                  <Text style={styles.categoryPercentage}>
+                    {Number.isFinite(pct) ? `${pct.toFixed(1)}%` : ""}
+                  </Text>
+                ) : null}
+                <Text style={styles.categoryValue}>
+                  {formatCurrency(value)}
+                </Text>
+                {canDrill ? (
+                  <Ionicons
+                    name="chevron-forward"
+                    size={20}
+                    color="#667eea"
+                    style={styles.chevronIcon}
+                  />
+                ) : null}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </>
+    );
+  };
+
+  const renderTerritoryCard = () => (
+    <View style={styles.sectionCard}>
+      {terrLevel === null ? (
+        <>
+          <Text style={styles.sectionTitle}>Inventory by Territory</Text>
+          {renderTerritoryRows()}
+        </>
+      ) : (
+        <>
+          <View style={styles.sectionHeader}>
+            <View style={styles.sectionHeaderLeft}>
+              <TouchableOpacity
+                onPress={handleTerritoryBack}
+                style={styles.backButtonSmall}
+              >
+                <Ionicons name="arrow-back" size={20} color="#667eea" />
+              </TouchableOpacity>
+              <Text style={styles.sectionTitle}>{territorySectionTitle()}</Text>
+            </View>
+            {terrBreadcrumbs.length > 0 ? (
+              <View style={styles.breadcrumbsContainer}>
+                {terrBreadcrumbs.map((crumb, idx) => (
+                  <Text key={`${crumb.level}-${idx}`} style={styles.breadcrumbText}>
+                    {crumb.label}
+                    {idx < terrBreadcrumbs.length - 1 ? " > " : ""}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          {renderTerritoryRows()}
+        </>
+      )}
+    </View>
+  );
 
   const renderCategories = (categories: any[]) => {
     // Filter out NULL/undefined categories, empty strings, and "Unknown" entries
@@ -1046,7 +1197,7 @@ export default function InventoryDashboardScreen() {
       );
     }
 
-    const data = snap || MOCK_DATA.snapshot;
+    const data = snap || EMPTY_INVENTORY.snapshot;
 
     // Extract values with fallback for both camelCase and snake_case
     const totalInventoryValue =
@@ -1118,6 +1269,9 @@ export default function InventoryDashboardScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Inventory by Territory (new card — separate from Category) */}
+        {renderTerritoryCard()}
 
         {/* Inventory by Category or Drill-Down */}
         <View style={styles.sectionCard}>
@@ -1240,7 +1394,7 @@ export default function InventoryDashboardScreen() {
       );
     }
 
-    const data = perf || MOCK_DATA.performance;
+    const data = perf || EMPTY_INVENTORY.performance;
     return (
       <View style={styles.tabContent}>
         {/* Fast Moving Items */}
@@ -1373,7 +1527,7 @@ export default function InventoryDashboardScreen() {
       );
     }
 
-    const data = trend || MOCK_DATA.trend;
+    const data = trend || EMPTY_INVENTORY.trend;
     const movementRaw = (data as any)?.movementInOut
       ? (data as any).movementInOut
       : (data as any)?.receiptsIssuesMonthly
@@ -1382,7 +1536,7 @@ export default function InventoryDashboardScreen() {
           inQuantity: r.receipts,
           outQuantity: r.issues,
         }))
-      : (MOCK_DATA.trend.movementInOut as any);
+      : (EMPTY_INVENTORY.trend.movementInOut as any);
     // Prefer values; fallback to quantities if values are missing
     const movementSeries = (movementRaw as any[]).map((r: any) => ({
       month: r.month,
@@ -1696,7 +1850,7 @@ export default function InventoryDashboardScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <LinearGradient
         colors={["#10b981", "#059669"]}
@@ -1815,7 +1969,7 @@ export default function InventoryDashboardScreen() {
         {activeTab === "trend" && renderTrendTab()}
         {activeTab === "risk" && renderRiskTab()}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

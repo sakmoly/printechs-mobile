@@ -6,24 +6,28 @@ import {
   StyleSheet,
   TouchableOpacity,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useAuthStore } from "../store/auth";
+import { checkErpAnalysisHealth } from "../api/mobileConfig";
+import { ERP_ANALYSIS } from "../api/endpoints";
+import { http } from "../api/http";
+import { normalizeServerUrl } from "../api/serverUrl";
 
 interface ServerConfigProps {
   onSave?: () => void;
 }
 
 export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
-  const { serverConfig, updateServerConfig } = useAuthStore();
+  const { serverConfig, updateServerConfig, saveServerConfig, logout } =
+    useAuthStore();
   const [serverUrl, setServerUrl] = useState(serverConfig.serverUrl || "");
   const [clientId, setClientId] = useState(
     serverConfig.clientId || "55d4241f3a"
   );
   const [isFetchingClientId, setIsFetchingClientId] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setServerUrl(serverConfig.serverUrl || "");
@@ -69,7 +73,7 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
     try {
       // Try to fetch client_id from the server configuration API
       const axios = (await import("axios")).default;
-      const fetchUrl = `${baseUrl}/api/method/printechs_utility.config.get_client_id`;
+      const fetchUrl = `${baseUrl}${ERP_ANALYSIS.config.getClientId}`;
       console.log("📡 Calling:", fetchUrl);
 
       const response = await axios.get(fetchUrl);
@@ -112,148 +116,226 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
       return;
     }
 
-    // Basic URL validation
-    const trimmedUrl = serverUrl.trim();
+    const normalized = normalizeServerUrl(serverUrl);
+    const trimmedUrl = normalized.url;
     if (
       !trimmedUrl.startsWith("http://") &&
       !trimmedUrl.startsWith("https://")
     ) {
       Alert.alert(
         "Invalid URL",
-        "URL must start with http:// or https://\n\nExamples:\n• https://erp.example.com\n• http://192.168.1.100:8000"
+        "URL must start with http:// or https://\n\nExamples:\n• https://www.printechs.com\n• https://erp.example.com\n• http://192.168.1.100:8000"
       );
       return;
     }
 
-    // Try to fetch client_id from server
-    await fetchClientIdFromServer(trimmedUrl);
+    if (normalized.remapped) {
+      setServerUrl(trimmedUrl);
+      console.warn("⚠️ Server URL remapped on save:", normalized.note);
+    }
 
-    updateServerConfig({
+    setIsSaving(true);
+    try {
+      const health = await checkErpAnalysisHealth(trimmedUrl);
+      if (!health.ok) {
+        Alert.alert(
+          "erp_analysis not available",
+          health.message +
+            "\n\nYou can still save the URL, but login and BA APIs need the erp_analysis app on that site.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Save anyway",
+              onPress: () => persistServer(trimmedUrl),
+            },
+          ]
+        );
+        return;
+      }
+
+      await fetchClientIdFromServer(trimmedUrl);
+      await persistServer(trimmedUrl, health.version);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const persistServer = async (trimmedUrl: string, analysisVersion?: string) => {
+    const nextClientId = clientId.trim() || "55d4241f3a";
+    await updateServerConfig({
       serverUrl: trimmedUrl,
       hostname: "",
       port: 0,
       isHttps: trimmedUrl.startsWith("https://"),
-      clientId: clientId.trim() || "55d4241f3a", // Default fallback
+      clientId: nextClientId,
     });
+    http.setBaseUrl(trimmedUrl);
 
-    Alert.alert("Success", "Server configuration saved successfully!");
+    try {
+      await useAuthStore.getState().loadMobileConfig();
+    } catch {
+      // non-fatal — defaults apply
+    }
+
+    Alert.alert(
+      "Success",
+      analysisVersion
+        ? `Server saved (${trimmedUrl}). erp_analysis ${analysisVersion} is available.`
+        : `Server configuration saved (${trimmedUrl}). Demo mode is now off.`
+    );
     onSave?.();
   };
 
+  // Plain content View — parent ScrollView/Modal owns scrolling.
+  // Nested flex:1 + ScrollView was clipping "Save Configuration" off-screen.
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.keyboardView}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.container}>
-          <View style={styles.header}>
-            <Ionicons name="server-outline" size={28} color="#667eea" />
-            <Text style={styles.title}>ERPNext Server</Text>
-          </View>
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <Ionicons name="server-outline" size={28} color="#667eea" />
+        <Text style={styles.title}>ERPNext Server</Text>
+      </View>
 
-          <View style={styles.infoCard}>
-            <Ionicons
-              name="information-circle-outline"
-              size={20}
-              color="#667eea"
-            />
-            <Text style={styles.infoText}>
-              Enter your complete ERPNext server URL. Include port number if
-              needed.
+      <View style={styles.infoCard}>
+        <Ionicons
+          name="information-circle-outline"
+          size={20}
+          color="#667eea"
+        />
+        <Text style={styles.infoText}>
+          With no URL saved, the app runs in demo mode (sample data). Enter
+          your ERPNext URL here to use your real company server.
+        </Text>
+      </View>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.label}>Server URL</Text>
+        <TextInput
+          style={styles.input}
+          value={serverUrl}
+          onChangeText={setServerUrl}
+          placeholder="https://www.printechs.com"
+          placeholderTextColor="#9ca3af"
+          keyboardType="url"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <Text style={styles.helpText}>
+          Live Printechs: https://www.printechs.com{"\n"}
+          Do not use support.printechs.com or erp.printechs.com (not the ERP
+          site).{"\n"}
+          Examples:{"\n"}• https://www.printechs.com{"\n"}•
+          https://erp.example.com{"\n"}• http://192.168.1.100:8000
+        </Text>
+      </View>
+
+      <View style={styles.inputGroup}>
+        <View style={styles.labelRow}>
+          <Text style={styles.label}>Client ID (Optional)</Text>
+          {isFetchingClientId && (
+            <Text style={styles.fetchingText}>
+              🔄 Fetching from server...
             </Text>
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Server URL</Text>
-            <TextInput
-              style={styles.input}
-              value={serverUrl}
-              onChangeText={setServerUrl}
-              placeholder="https://erp.example.com:8000"
-              placeholderTextColor="#9ca3af"
-              keyboardType="url"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Text style={styles.helpText}>
-              Examples:{"\n"}• https://erp.example.com{"\n"}•
-              https://erp.example.com:443{"\n"}• http://192.168.1.100:8000
-            </Text>
-          </View>
-
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>Client ID (Optional)</Text>
-              {isFetchingClientId && (
-                <Text style={styles.fetchingText}>
-                  🔄 Fetching from server...
-                </Text>
-              )}
-            </View>
-            <View style={styles.clientIdRow}>
-              <TextInput
-                style={[styles.input, styles.clientIdInput]}
-                value={clientId}
-                onChangeText={setClientId}
-                placeholder="55d4241f3a"
-                placeholderTextColor="#9ca3af"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!isFetchingClientId}
-              />
-              <TouchableOpacity
-                style={styles.refreshButton}
-                onPress={() =>
-                  fetchClientIdFromServer(serverUrl || serverConfig.serverUrl)
-                }
-                disabled={isFetchingClientId || !serverUrl}
-              >
-                <Ionicons
-                  name="refresh"
-                  size={20}
-                  color={
-                    isFetchingClientId || !serverUrl ? "#9ca3af" : "#667eea"
-                  }
-                />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.helpText}>
-              Will auto-fetch from server, or use default: 55d4241f3a
-            </Text>
-          </View>
-
-          {serverConfig.serverUrl && (
-            <View style={styles.currentServer}>
-              <Text style={styles.currentServerLabel}>Current Server:</Text>
-              <Text style={styles.currentServerValue}>
-                {serverConfig.serverUrl}
-              </Text>
-            </View>
           )}
-
-          <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-            <Ionicons name="save-outline" size={20} color="#ffffff" />
-            <Text style={styles.saveButtonText}>Save Configuration</Text>
+        </View>
+        <View style={styles.clientIdRow}>
+          <TextInput
+            style={[styles.input, styles.clientIdInput]}
+            value={clientId}
+            onChangeText={setClientId}
+            placeholder="55d4241f3a"
+            placeholderTextColor="#9ca3af"
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!isFetchingClientId}
+          />
+          <TouchableOpacity
+            style={styles.refreshButton}
+            onPress={() =>
+              fetchClientIdFromServer(serverUrl || serverConfig.serverUrl)
+            }
+            disabled={isFetchingClientId || !serverUrl}
+          >
+            <Ionicons
+              name="refresh"
+              size={20}
+              color={
+                isFetchingClientId || !serverUrl ? "#9ca3af" : "#667eea"
+              }
+            />
           </TouchableOpacity>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        <Text style={styles.helpText}>
+          Will auto-fetch from server, or use default: 55d4241f3a
+        </Text>
+      </View>
+
+      {serverConfig.serverUrl ? (
+        <View style={styles.currentServer}>
+          <Text style={styles.currentServerLabel}>Current Server:</Text>
+          <Text style={styles.currentServerValue}>
+            {serverConfig.serverUrl}
+          </Text>
+        </View>
+      ) : null}
+
+      <TouchableOpacity
+        style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+        onPress={handleSave}
+        disabled={isSaving || isFetchingClientId}
+      >
+        <Ionicons name="save-outline" size={20} color="#ffffff" />
+        <Text style={styles.saveButtonText}>
+          {isSaving ? "Checking server..." : "Save Configuration"}
+        </Text>
+      </TouchableOpacity>
+
+      {!!serverConfig.serverUrl?.trim() && (
+        <TouchableOpacity
+          style={styles.demoResetButton}
+          onPress={() => {
+            Alert.alert(
+              "Switch to demo?",
+              "You will be logged out. The app will use sample data until you save a real server URL again.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Use demo",
+                  style: "destructive",
+                  onPress: async () => {
+                    await saveServerConfig({
+                      serverUrl: "",
+                      hostname: "",
+                      port: 8000,
+                      isHttps: true,
+                      clientId: "",
+                    });
+                    setServerUrl("");
+                    setClientId("55d4241f3a");
+                    await logout();
+                    router.replace("/(auth)/login");
+                    onSave?.();
+                  },
+                },
+              ]
+            );
+          }}
+        >
+          <Ionicons name="flask-outline" size={20} color="#667eea" />
+          <Text style={styles.demoResetButtonText}>
+            Switch to demo (sample data)
+          </Text>
+        </TouchableOpacity>
+      )}
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
   container: {
     backgroundColor: "#ffffff",
     borderRadius: 16,
     padding: 24,
-    margin: 16,
+    marginBottom: 16,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
@@ -369,10 +451,30 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  saveButtonDisabled: {
+    opacity: 0.6,
+  },
   saveButtonText: {
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "700",
     marginLeft: 8,
+  },
+  demoResetButton: {
+    marginTop: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#c7d2fe",
+    backgroundColor: "#eef2ff",
+    gap: 8,
+  },
+  demoResetButtonText: {
+    color: "#4f46e5",
+    fontSize: 15,
+    fontWeight: "700",
   },
 });

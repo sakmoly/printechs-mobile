@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { View, ActivityIndicator, StyleSheet, Platform } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { WebView } from "react-native-webview";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 const GOOGLE_VIEWER = "https://docs.google.com/gview?embedded=1&url=";
 
@@ -41,7 +42,7 @@ export default function PdfViewerScreen() {
           title: params?.title ? params.title.toString() : "PDF Viewer",
         }}
       />
-      <View style={styles.container}>
+      <SafeScreen style={styles.container}>
         {viewerUrl ? (
           <WebView
             source={{ uri: viewerUrl }}
@@ -65,7 +66,7 @@ export default function PdfViewerScreen() {
             style={styles.loading}
           />
         )}
-      </View>
+      </SafeScreen>
     </>
   );
 }

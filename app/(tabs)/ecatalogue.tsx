@@ -194,7 +194,7 @@ export default function ECatalogueScreen() {
     try {
       // Fetch flip URL for the selected catalogue
       const resp = await http.get<any>(
-        "/api/method/printechs_utility.catalogue.get_catalogue_flip_url",
+        "/api/method/erp_analysis.catalogue.get_catalogue_flip_url",
         { catalogue_id: catalogue.id }
       );
       const payload = resp?.message || resp;

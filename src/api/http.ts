@@ -1,6 +1,13 @@
 import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from "axios";
 import { storage } from "./storage";
 import { oauthApi } from "./oauth";
+import { isMissingBaMethodError } from "./baErrors";
+import {
+  isNetworkOrTlsError,
+  normalizeServerUrl,
+  resolveServerBaseUrl,
+} from "./serverUrl";
+import { logger } from "../utils/logger";
 
 export class HttpClient {
   private client: AxiosInstance;
@@ -9,13 +16,13 @@ export class HttpClient {
   constructor(baseURL: string) {
     // Allow empty baseURL - it will be set later from serverConfig
     if (baseURL && typeof baseURL !== "string") {
-      console.error("❌ Invalid baseURL provided to HttpClient:", baseURL);
+      logger.error("❌ Invalid baseURL provided to HttpClient:", baseURL);
       throw new Error("Invalid baseURL provided to HttpClient");
     }
 
+    const normalized = resolveServerBaseUrl(baseURL);
     this.client = axios.create({
-      baseURL:
-        baseURL && baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL || "", // Remove trailing slash
+      baseURL: normalized,
       timeout: 30000,
       headers: {
         "Content-Type": "application/json",
@@ -32,21 +39,23 @@ export class HttpClient {
 
   setBaseUrl(baseURL: string) {
     if (baseURL && typeof baseURL !== "string") {
-      console.error("❌ Invalid baseURL provided to setBaseUrl:", baseURL);
+      logger.error("❌ Invalid baseURL provided to setBaseUrl:", baseURL);
       return;
     }
     // Allow empty baseURL - it means no server configured yet
     if (!baseURL) {
-      console.log(
+      logger.info(
         "⚠️ Empty baseURL provided to setBaseUrl - no server configured"
       );
       this.client.defaults.baseURL = "";
       return;
     }
-    this.client.defaults.baseURL = baseURL.endsWith("/")
-      ? baseURL.slice(0, -1)
-      : baseURL;
-    console.log(
+    const normalized = normalizeServerUrl(baseURL);
+    if (normalized.remapped) {
+      logger.warn("⚠️ Server URL remapped:", normalized.note);
+    }
+    this.client.defaults.baseURL = normalized.url;
+    logger.info(
       "✅ HTTP Client baseURL updated to:",
       this.client.defaults.baseURL
     );
@@ -56,6 +65,36 @@ export class HttpClient {
     return this.client.defaults.baseURL || "";
   }
 
+  /** Prefer live axios baseURL; if empty, heal from auth store. */
+  private syncBaseUrlFromStore() {
+    if (this.client.defaults.baseURL) {
+      // Heal stored apex / alias hosts even when baseURL is already set
+      const healed = resolveServerBaseUrl(this.client.defaults.baseURL);
+      if (healed && healed !== this.client.defaults.baseURL) {
+        this.client.defaults.baseURL = healed;
+      }
+      return;
+    }
+    try {
+      // Lazy import avoids circular init with auth store
+      const { useAuthStore } = require("../store/auth") as typeof import("../store/auth");
+      const stored = useAuthStore.getState().serverConfig?.serverUrl;
+      if (stored) this.setBaseUrl(stored);
+    } catch {
+      /* store may not be ready yet */
+    }
+  }
+
+  /** Join base + path without doubling when `url` is already absolute. */
+  private resolveFullUrl(url?: string, base?: string): string {
+    const u = url || "";
+    if (/^https?:\/\//i.test(u)) return u;
+    const b = (base || this.client.defaults.baseURL || "").replace(/\/$/, "");
+    if (!b) return u;
+    if (!u) return b;
+    return `${b}${u.startsWith("/") ? u : `/${u}`}`;
+  }
+
   private setupInterceptors() {
     // Request interceptor - add auth token
     this.client.interceptors.request.use(
@@ -63,15 +102,62 @@ export class HttpClient {
         try {
           // Validate config
           if (!config || !config.url) {
-            console.error("❌ Invalid request config:", config);
+            logger.error("❌ Invalid request config:", config);
             throw new Error("Invalid request configuration");
           }
 
-          // Check if this is a protected API endpoint that needs authentication
+          this.syncBaseUrlFromStore();
+          if (!config.baseURL && this.client.defaults.baseURL) {
+            config.baseURL = this.client.defaults.baseURL;
+          }
+
+          // Absolute URLs must not keep a baseURL — some clients concatenate
+          // and produce https://hosthttps://host/api/...
+          if (/^https?:\/\//i.test(config.url)) {
+            try {
+              const parsed = new URL(config.url);
+              const healedBase = resolveServerBaseUrl(
+                `${parsed.protocol}//${parsed.host}`
+              );
+              if (healedBase && healedBase !== `${parsed.protocol}//${parsed.host}`) {
+                config.url = `${healedBase}${parsed.pathname}${parsed.search}`;
+              }
+            } catch {
+              /* keep as-is */
+            }
+            config.baseURL = undefined;
+          }
+
+          const absoluteUrl = this.resolveFullUrl(
+            config.url,
+            config.baseURL || this.client.defaults.baseURL
+          );
+          if (
+            config.url.startsWith("/api/") &&
+            !(config.baseURL || this.client.defaults.baseURL)
+          ) {
+            logger.error(
+              "❌ No server URL configured — cannot call",
+              config.url
+            );
+            return Promise.reject(
+              new Error(
+                "No server URL configured. Open Settings → Configure Server and save https://www.printechs.com"
+              )
+            );
+          }
+
+          const urlPath = config.url || "";
+          const isOAuthOrPublic =
+            urlPath.includes("frappe.integrations.oauth2") ||
+            urlPath.includes("erp_analysis.auth_otp") ||
+            urlPath.includes("erp_analysis.config.get_client_id");
+
+          // Protect Frappe method + resource APIs (Bearer). Only strip auth for OAuth/public.
           const isProtectedEndpoint =
-            config.url.includes("/api/method/") &&
-            !config.url.includes("printechs_utility.auth_otp") &&
-            !config.url.includes("frappe.integrations.oauth2");
+            !isOAuthOrPublic &&
+            (urlPath.includes("/api/method/") ||
+              urlPath.includes("/api/resource/"));
 
           if (isProtectedEndpoint) {
             // Get access token for protected endpoints
@@ -80,19 +166,26 @@ export class HttpClient {
             if (accessToken) {
               config.headers = config.headers || {};
               config.headers.Authorization = `Bearer ${accessToken}`;
-              console.log("🔑 Adding access token to protected endpoint");
+              logger.info("🔑 Adding access token to protected endpoint");
             } else {
-              console.log(
+              logger.info(
                 "⚠️ No access token available for protected endpoint"
               );
             }
-          } else {
-            // For OAuth endpoints, ensure no auth header
+          } else if (isOAuthOrPublic) {
+            // For OAuth / public config endpoints, ensure no auth header
             if (config.headers) {
               delete config.headers.Authorization;
               delete config.headers.authorization;
             }
-            console.log("🌐 Making unauthenticated request for OAuth endpoint");
+            logger.info("🌐 Making unauthenticated request for OAuth/public endpoint");
+          } else {
+            // Other relative paths — still attach token if we have one
+            const accessToken = await storage.getToken();
+            if (accessToken) {
+              config.headers = config.headers || {};
+              config.headers.Authorization = `Bearer ${accessToken}`;
+            }
           }
 
           // Explicitly remove Expect header to prevent 417 errors
@@ -105,18 +198,17 @@ export class HttpClient {
             }
           }
 
-          console.log(
-            `🚀 HTTP Request: ${config.method?.toUpperCase()} ${config.url}`
+          logger.info(
+            `🚀 HTTP Request: ${config.method?.toUpperCase()} ${absoluteUrl}`
           );
-          console.log("🔍 Request headers:", config.headers);
           return config;
         } catch (error) {
-          console.error("❌ Request interceptor error:", error);
+          logger.error("❌ Request interceptor error:", error);
           return Promise.reject(error);
         }
       },
       (error) => {
-        console.error("❌ Request interceptor setup error:", error);
+        logger.error("❌ Request interceptor setup error:", error);
         return Promise.reject(error);
       }
     );
@@ -124,7 +216,7 @@ export class HttpClient {
     // Response interceptor - handle errors
     this.client.interceptors.response.use(
       (response) => {
-        console.log(
+        logger.info(
           `✅ HTTP Response: ${response.status} ${response.config.url}`
         );
         return response;
@@ -158,27 +250,57 @@ export class HttpClient {
             (exceptionStr &&
               exceptionStr.toLowerCase().includes("permissionerror")));
 
+        // BA often returns 403 for Access Profile / module scope (not a bad token)
+        const isBaScope403 =
+          status === 403 &&
+          (url.includes("get_executive_dashboard") ||
+            url.includes("erp_analysis.executive") ||
+            url.includes("erp_analysis.sales_kpis") ||
+            url.includes("erp_analysis.customer") ||
+            url.includes("search_customers") ||
+            url.includes("get_customer_360"));
+
         const isExpected403 =
           status === 403 &&
           (url.includes("frappe.auth.get_logged_user") ||
             url.includes("get_logged_user") ||
-            permissionErrorDetected);
+            permissionErrorDetected ||
+            isBaScope403);
+
+        const missingMethodBlob = JSON.stringify(
+          responseData || serverMessage || exceptionStr || ""
+        ).toLowerCase();
+        const isMissingMethod417 =
+          status === 417 &&
+          (missingMethodBlob.includes("failed to get method") ||
+            missingMethodBlob.includes("has no attribute") ||
+            missingMethodBlob.includes("no module named") ||
+            missingMethodBlob.includes("does not exist") ||
+            url.includes("erp_analysis."));
 
         const isSoft417 =
-          status === 417 && url.includes("store_push_token");
+          (status === 417 && url.includes("store_push_token")) ||
+          isMissingMethod417;
 
         if (!isExpected403 && !isSoft417) {
-          console.error("❌ HTTP Error:", {
+          const fullUrl = this.resolveFullUrl(
+            url,
+            error.config?.baseURL || this.client.defaults.baseURL
+          );
+          logger.error("❌ HTTP Error:", {
             message: error.message,
             status: status,
-            url: url,
+            url: fullUrl || url,
+            code: error.code,
             data: error.response?.data,
           });
         }
 
-        // Handle 417 separately - it means endpoint not found, don't try to refresh token
-        if (status === 417 && !isSoft417) {
-          console.log("⚠️ 417 error - API endpoint not found (not an auth issue)");
+        // Missing BA methods (417) are expected on sites that have not shipped Phase 3 yet
+        if (isMissingMethod417) {
+          // Quiet — callers use withBaDemoFallback / live Frappe fallbacks
+        } else if (status === 417 && !isSoft417) {
+          logger.info("⚠️ 417 error - API endpoint not found (not an auth issue)");
           // Don't try to refresh or logout - just pass the error through
         } else if (
           status === 401 ||
@@ -186,12 +308,12 @@ export class HttpClient {
         ) {
           // Try to refresh token for protected endpoints
           const isProtectedEndpoint =
-            url.includes("/api/method/") &&
-            !url.includes("printechs_utility.auth_otp") &&
+            (url.includes("/api/method/") || url.includes("/api/resource/")) &&
+            !url.includes("erp_analysis.auth_otp") &&
             !url.includes("frappe.integrations.oauth2");
 
           if (isProtectedEndpoint) {
-            console.log(
+            logger.info(
               "🔄 Token expired, invalid, or missing (401/403) - attempting refresh..."
             );
 
@@ -199,7 +321,7 @@ export class HttpClient {
               const refreshResult = await oauthApi.refreshToken();
 
               if (refreshResult.success && refreshResult.data) {
-                console.log(
+                logger.info(
                   "✅ Token refreshed successfully - retrying request"
                 );
 
@@ -213,25 +335,34 @@ export class HttpClient {
                   return this.client.request(error.config);
                 }
               } else {
-                // Check if error is recoverable (temporary network/server issue)
-                const isRecoverable = 
-                  refreshResult.isRecoverable === true ||
-                  (refreshResult.error?.toLowerCase().includes("network") ||
-                   refreshResult.error?.toLowerCase().includes("server") ||
-                   refreshResult.error?.toLowerCase().includes("timeout") ||
-                   refreshResult.error?.toLowerCase().includes("connection"));
+                // Check if error is recoverable (temporary network/server issue).
+                // Do NOT match the substring "server" inside "No server URL configured".
+                const errLower = (refreshResult.error || "").toLowerCase();
+                const isMissingServerUrl =
+                  errLower.includes("no server url") ||
+                  errLower.includes("server url configured");
+                const isRecoverable =
+                  !isMissingServerUrl &&
+                  (refreshResult.isRecoverable === true ||
+                    errLower.includes("network") ||
+                    errLower.includes("timeout") ||
+                    errLower.includes("connection") ||
+                    errLower.includes("econn") ||
+                    /\b5\d\d\b/.test(errLower) ||
+                    errLower.includes("server error") ||
+                    errLower.includes("service unavailable"));
 
                 if (isRecoverable) {
                   // Temporary error - don't logout, just fail the request
                   // User stays logged in, will retry on next API call
-                  console.log("⚠️ Temporary refresh failure (recoverable) - request will fail but user stays logged in");
-                  console.log("⚠️ Error:", refreshResult.error);
+                  logger.info("⚠️ Temporary refresh failure (recoverable) - request will fail but user stays logged in");
+                  logger.info("⚠️ Error:", refreshResult.error);
                   // Reject the error so the caller can handle it
                   return Promise.reject(error);
                 } else {
                   // Refresh token is invalid/expired - logout user
-                  console.log("❌ Refresh token invalid (non-recoverable) - logging out");
-                  console.log("❌ Error:", refreshResult.error);
+                  logger.info("❌ Refresh token invalid (non-recoverable) - logging out");
+                  logger.info("❌ Error:", refreshResult.error);
                   this.onUnauthorized?.();
                 }
               }
@@ -248,33 +379,53 @@ export class HttpClient {
 
               if (isNetworkError) {
                 // Network error - don't logout, just fail the request
-                console.error("⚠️ Network error during token refresh - request will fail but user stays logged in");
+                logger.error("⚠️ Network error during token refresh - request will fail but user stays logged in");
                 return Promise.reject(error);
               } else {
                 // Other error - logout
-                console.error("❌ Token refresh error:", refreshError);
+                logger.error("❌ Token refresh error:", refreshError);
                 this.onUnauthorized?.();
               }
             }
           } else {
-            console.log("🔒 Unauthorized access - triggering logout");
+            logger.info("🔒 Unauthorized access - triggering logout");
             this.onUnauthorized?.();
           }
         }
 
-        // Handle network errors (no HTTP response body)
+        // Handle network errors (no HTTP response body) — SSL failures look like this too
         if (!error.response) {
+          const base =
+            error.config?.baseURL || this.client.defaults.baseURL || "";
+          const fullUrl = this.resolveFullUrl(url, base);
           const isTimeout =
             error.code === "ECONNABORTED" ||
             error.message?.toLowerCase().includes("timeout");
           if (isTimeout) {
-            console.error("🌐 Request timed out before the server responded");
-            throw new Error(
-              "Request timed out. The server took too long to respond."
+            logger.error("🌐 Request timed out:", fullUrl);
+            return Promise.reject(
+              new Error(
+                "Request timed out. The server took too long to respond."
+              )
             );
           }
-          console.error("🌐 Network error - no response received");
-          throw new Error("Network error: Unable to connect to server");
+          if (isNetworkOrTlsError(error)) {
+            logger.error("🌐 Network/TLS error — no response:", fullUrl);
+            const hostHint =
+              resolveServerBaseUrl(base) ||
+              (/^https?:\/\//i.test(url) ? url : base);
+            return Promise.reject(
+              new Error(
+                hostHint
+                  ? `Unable to connect to ${hostHint}. Check the server URL (use https://www.printechs.com for live) and your network.`
+                  : "Network error: Unable to connect to server. Configure a server URL in Settings."
+              )
+            );
+          }
+          logger.error("🌐 Network error - no response received:", fullUrl);
+          return Promise.reject(
+            new Error("Network error: Unable to connect to server")
+          );
         }
 
         return Promise.reject(error);
@@ -289,24 +440,29 @@ export class HttpClient {
   async get<T>(
     url: string,
     params?: any,
-    requestConfig?: AxiosRequestConfig
+    requestConfig?: AxiosRequestConfig & { silentError?: boolean }
   ): Promise<T> {
     try {
       if (!url || typeof url !== "string") {
         throw new Error("Invalid URL provided to GET request");
       }
+      const { silentError, ...axiosConfig } = requestConfig || {};
       const response = await this.client.get(url, {
-        ...requestConfig,
+        ...axiosConfig,
         ...(params !== undefined ? { params } : {}),
       });
       return response.data;
     } catch (error) {
       try {
-        // Silence noise for known benign routes (e.g., logout-time cache clear)
-        if (typeof url === "string" && url.includes("clear_my_access_cache")) {
-          // Do not log
-        } else {
-          console.error("❌ GET request failed:", url, error);
+        const softMissing =
+          typeof url === "string" &&
+          (url.includes("clear_my_access_cache") ||
+            isMissingBaMethodError(error));
+        const silent = Boolean(
+          (requestConfig as { silentError?: boolean } | undefined)?.silentError
+        );
+        if (!softMissing && !silent) {
+          logger.error("❌ GET request failed:", url, error);
         }
       } catch {}
       throw error;
@@ -331,8 +487,9 @@ export class HttpClient {
             typeof url === "string" &&
             url.includes("store_push_token") &&
             ax.response?.status === 417;
-          if (!quiet417Push) {
-            console.error("❌ POST request failed:", url, error);
+          const softMissing = isMissingBaMethodError(error);
+          if (!quiet417Push && !softMissing) {
+            logger.error("❌ POST request failed:", url, error);
           }
         }
       } catch {}
@@ -348,7 +505,7 @@ export class HttpClient {
       const response = await this.client.put(url, data);
       return response.data;
     } catch (error) {
-      console.error("❌ PUT request failed:", url, error);
+      logger.error("❌ PUT request failed:", url, error);
       throw error;
     }
   }
@@ -361,7 +518,7 @@ export class HttpClient {
       const response = await this.client.delete(url);
       return response.data;
     } catch (error) {
-      console.error("❌ DELETE request failed:", url, error);
+      logger.error("❌ DELETE request failed:", url, error);
       throw error;
     }
   }

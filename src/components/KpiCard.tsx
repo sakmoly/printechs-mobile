@@ -16,8 +16,8 @@ interface KpiCardProps {
   format?: "currency" | "number" | "percentage";
   currency?: string;
   unit?: string;
-  changeDirection?: "up" | "down";
-  colors?: string[];
+  changeDirection?: "up" | "down" | "neutral";
+  colors?: readonly [string, string, ...string[]];
   onPress?: () => void;
 }
 

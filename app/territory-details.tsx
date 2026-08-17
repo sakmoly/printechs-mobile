@@ -53,7 +53,7 @@ export default function TerritoryDetailsScreen() {
   return (
     <SafeAreaView
       style={isIOS ? styles.safeArea : styles.safeAreaAndroid}
-      edges={isIOS ? ["top"] : undefined}
+      edges={["top", "bottom"]}
     >
       <View style={styles.container}>
       <View style={styles.header}>

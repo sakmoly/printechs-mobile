@@ -141,7 +141,7 @@ export const TerritoryBarChart: React.FC<TerritoryBarChartProps> = ({
         <View style={styles.cardsContainer}>
           {data.map((item, index) => (
             <View
-              key={item.territory}
+              key={`${item.territory}-${index}`}
               style={[
                 styles.dataCard,
                 { borderLeftColor: getColorForIndex(index) },

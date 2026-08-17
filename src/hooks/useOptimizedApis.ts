@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import {
   optimizedApis,
-  type DashboardData,
   type EmployeesData,
   type ApprovalsData,
   type UserProfileData,
@@ -9,7 +9,12 @@ import {
   type ReceivablesPerformanceData,
   type ReceivablesTrendData,
 } from "../api/optimized-apis";
-import { USE_MOCK_DATA } from "../api/mock";
+import { shouldUseMockData } from "../api/mock";
+import { fetchExecutiveDashboard } from "../api/executive";
+import type { ExecutiveParams } from "../api/executive";
+import type { ExecutiveDashboard } from "../api/executiveTypes";
+import { useAuthStore } from "../store/auth";
+import { getSalesTerritoriesParam } from "../api/accessScope";
 
 // Re-export optimizedApis for direct use in components
 export { optimizedApis };
@@ -38,6 +43,51 @@ const generateQRData = (user: any): string => {
 // ========== DASHBOARD HOOKS ==========
 
 /**
+ * Phase 3A — Executive Dashboard 2.0 (single aggregated payload)
+ */
+export const useExecutiveDashboard = (
+  params: ExecutiveParams = {},
+  options?: { enabled?: boolean }
+) => {
+  const lastGoodRef = useRef<ExecutiveDashboard | null>(null);
+
+  const query = useQuery({
+    queryKey: ["executive-dashboard", params],
+    queryFn: () => fetchExecutiveDashboard(params),
+    staleTime: 60_000,
+    gcTime: 10 * 60_000,
+    retry: (count, err: any) => {
+      // Don't hammer BA on territory scope 403
+      if (err?.status === 403 || err?.isBaScopeError) return false;
+      return count < 1;
+    },
+    enabled: options?.enabled !== false,
+    // Keep Sales KPIs on screen while period/territory refetch runs
+    placeholderData: keepPreviousData,
+  });
+
+  useEffect(() => {
+    if (query.data && !query.isError) {
+      lastGoodRef.current = query.data;
+    }
+  }, [query.data, query.isError]);
+
+  // After a failed territory switch, React Query drops data for that key —
+  // fall back to the last successful executive payload so UI doesn't flip
+  // to classic expandable cards.
+  const data = query.data ?? lastGoodRef.current;
+  const showingStaleOnError = Boolean(
+    query.isError && !query.data && lastGoodRef.current
+  );
+
+  return {
+    ...query,
+    data,
+    showingStaleOnError,
+  };
+};
+
+/**
  * Single hook for Dashboard screen - gets all dashboard data in one API call
  */
 export const useDashboardData = (
@@ -45,157 +95,24 @@ export const useDashboardData = (
     company?: string;
     from_date?: string;
     to_date?: string;
+    territories?: string;
+    territory?: string;
   } = {}
 ) => {
+  const scope = useAuthStore((s) => s.permissions.scope);
+  // Respect Allow View All Sales — do not pin Sales to a territory list
+  const fromScope = getSalesTerritoriesParam(scope);
+  const territoriesCsv =
+    params.territories !== undefined ? params.territories : fromScope;
+  const requestParams = {
+    ...params,
+    territories: territoriesCsv,
+  };
+
   return useQuery({
-    queryKey: ["dashboard-complete", params],
+    queryKey: ["dashboard-complete", requestParams],
     queryFn: async () => {
-      console.log("🔍 Dashboard Query - USE_MOCK_DATA:", USE_MOCK_DATA);
-      if (USE_MOCK_DATA) {
-        // Return mock data with same structure
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        return {
-          kpis: [
-            {
-              id: "sales_today",
-              title: "SALES Today",
-              value: 97291.0,
-              change_percentage: 0.0,
-              change_direction: "down" as const,
-              currency: "SAR",
-            },
-            {
-              id: "sales_mtd",
-              title: "SALES MTD",
-              value: 2272319.53,
-              change_percentage: -28.4,
-              change_direction: "down" as const,
-              currency: "SAR",
-              previous_year_value: 3172618.45,
-            },
-            {
-              id: "sales_ytd",
-              title: "SALES YTD",
-              value: 30337829.76,
-              change_percentage: 4.2,
-              change_direction: "up" as const,
-              currency: "SAR",
-              previous_year_value: 29120904.92,
-            },
-            {
-              id: "gross_margin",
-              title: "GROSS MARGIN",
-              value: 38.6,
-              change_percentage: 2.1,
-              change_direction: "up" as const,
-              unit: "%",
-            },
-          ],
-          user_profile: {
-            image_url: "http://printechs.com/files/Sakeer.png",
-            employee_name: "Sakeer",
-            company: "Printechs",
-            designation: "Manager",
-            branch: "",
-            cell_number: "",
-            company_email: "",
-            current_address: "",
-            country: "",
-          },
-          sales_dashboard: {
-            metrics: {
-              totalSales: 2018190.53,
-              totalInvoices: 150,
-              avgInvoiceValue: 13454.6,
-              costOfGoodsSold: 1500000.0,
-              grossProfit: 518190.53,
-              grossProfitPercentage: 25.7,
-            },
-            top_brands: [
-              {
-                brand: "Hitachi",
-                total_sales: 500000,
-                total_quantity: 1200,
-                total_cost: 350000,
-                gross_profit_amount: 150000,
-                gross_profit_percent: 30.0,
-                invoice_count: 45,
-              },
-              {
-                brand: "Nedap",
-                total_sales: 300000,
-                total_quantity: 800,
-                total_cost: 200000,
-                gross_profit_amount: 100000,
-                gross_profit_percent: 33.3,
-                invoice_count: 25,
-              },
-            ],
-            top_customers: [
-              {
-                customer: "CUST001",
-                customer_name: "Customer A",
-                total_sales: 200000,
-                invoice_count: 12,
-              },
-              {
-                customer: "CUST002",
-                customer_name: "Customer B",
-                total_sales: 150000,
-                invoice_count: 8,
-              },
-            ],
-            monthly_trend: {
-              labels: [
-                "Jan",
-                "Feb",
-                "Mar",
-                "Apr",
-                "May",
-                "Jun",
-                "Jul",
-                "Aug",
-                "Sep",
-                "Oct",
-                "Nov",
-                "Dec",
-              ],
-              current: [
-                100000, 150000, 200000, 180000, 220000, 250000, 230000, 280000,
-                300000, 201819, 0, 0,
-              ],
-              previous: [
-                90000, 140000, 180000, 160000, 200000, 230000, 210000, 260000,
-                280000, 190000, 180000, 200000,
-              ],
-            },
-            territory: [
-              { territory: "Riyadh", total_sales: 800000, invoice_count: 50 },
-              { territory: "Jeddah", total_sales: 600000, invoice_count: 40 },
-              { territory: "Dammam", total_sales: 400000, invoice_count: 30 },
-            ],
-            division: [
-              {
-                division: "Industrial",
-                total_sales: 1200000,
-                margin_percentage: 28.5,
-              },
-              {
-                division: "Retail",
-                total_sales: 800000,
-                margin_percentage: 22.0,
-              },
-              {
-                division: "Software",
-                total_sales: 200000,
-                margin_percentage: 45.0,
-              },
-            ],
-          },
-          date: new Date().toLocaleDateString(),
-        } as DashboardData;
-      }
-      return optimizedApis.getDashboardData(params);
+      return optimizedApis.getDashboardData(requestParams);
     },
     staleTime: 0, // No stale time - always fetch fresh data
     gcTime: 0, // No cache time - always fetch fresh data
@@ -242,7 +159,7 @@ export const useEmployeesData = (
   return useQuery({
     queryKey: ["employees-complete", params],
     queryFn: async () => {
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         await new Promise((resolve) => setTimeout(resolve, 600));
         return {
           employees: [
@@ -303,8 +220,9 @@ export const useEmployeesData = (
 
 // Selector hooks for specific employee data
 export const useEmployeesList = (params = {}) => {
-  const { data } = useEmployeesData(params);
-  return data?.employees || [];
+  const query = useEmployeesData(params);
+  const employees = query.data?.employees || [];
+  return { ...query, data: employees };
 };
 
 export const useEmployeesFilters = (params = {}) => {
@@ -330,20 +248,28 @@ export const useApprovalsData = (
     territory?: string; // Add territory parameter
   } = {}
 ) => {
-  // Get user profile to fetch territory from the profile API
-  const { data: userProfile } = useUserProfile();
-
-  // Determine user's territory from profile API
-  // This ensures we get the territory from the backend, not just the auth store
-  const userTerritory = userProfile?.territory || params.territory || undefined;
+  // Approvals are scoped by approve_territories (e.g. Dammam only),
+  // not the broader view_territories used for Sales analytics.
+  const approveTerritories = useAuthStore(
+    (s) => s.permissions.scope?.approve_territories
+  );
+  const approveBranch = useAuthStore((s) => s.permissions.scope?.branch);
+  const approveCsv =
+    approveTerritories && approveTerritories.length > 0
+      ? approveTerritories.join(",")
+      : approveBranch || params.territory || undefined;
 
   return useQuery({
-    queryKey: ["approvals-complete", { ...params, territory: userTerritory }],
+    queryKey: ["approvals-complete", { ...params, territories: approveCsv }],
     queryFn: async () => {
-      // Pass territory to API
-      const requestParams = { ...params, territory: userTerritory };
+      const requestParams = {
+        ...params,
+        territories: approveCsv,
+        // Avoid sending a single profile territory that widens/narrows wrongly
+        territory: undefined,
+      };
 
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         // Reduced delay for faster loading - from 500ms to 100ms
         await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -441,9 +367,17 @@ export const useApprovalsData = (
           },
         ];
 
-        // Filter by territory if user has a territory
-        const filteredApprovals = userTerritory
-          ? mockApprovals.filter((app) => app.territory === userTerritory)
+        // Filter mock inbox by approve territories (comma CSV or single)
+        const approveSet = new Set(
+          (approveCsv || "")
+            .split(",")
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean)
+        );
+        const filteredApprovals = approveSet.size
+          ? mockApprovals.filter((app) =>
+              approveSet.has(String(app.territory || "").toLowerCase())
+            )
           : mockApprovals;
 
         return {
@@ -451,7 +385,7 @@ export const useApprovalsData = (
           total_pending: filteredApprovals.length,
           total_approved: 0,
           total_rejected: 0,
-          user_territory: userTerritory,
+          user_territory: approveCsv,
         } as ApprovalsData;
       }
       return optimizedApis.getApprovalsData(requestParams);
@@ -507,7 +441,7 @@ export const useUserProfileData = () => {
     queryKey: ["user-profile-complete", email],
     enabled: !!email,
     queryFn: async () => {
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         await new Promise((resolve) => setTimeout(resolve, 400));
 
         // Get current user from auth store for mock data
@@ -524,19 +458,19 @@ export const useUserProfileData = () => {
             employee_name:
               currentUser?.full_name ||
               currentUser?.username ||
-              "Administrator",
+              "User",
             company: currentUser?.company || "",
             designation: currentUser?.designation || "",
             branch: currentUser?.branch || "",
             cell_number: currentUser?.mobile_no || currentUser?.phone || "",
-            company_email: currentUser?.email || "admin@example.com",
+            company_email: currentUser?.email || "",
             current_address:
               currentUser?.location || currentUser?.current_address || "",
             country: currentUser?.country || "",
           },
           qr_data: currentUser
             ? generateQRData(currentUser)
-            : "BEGIN:VCARD\nVERSION:3.0\nFN:Administrator\nORG:\nTITLE:\nTEL:\nEMAIL:admin@example.com\nADR:;\nEND:VCARD",
+            : "BEGIN:VCARD\nVERSION:3.0\nFN:User\nORG:\nTITLE:\nTEL:\nEMAIL:\nADR:;\nEND:VCARD",
         } as UserProfileData;
       }
       return optimizedApis.getUserProfileData();
@@ -623,8 +557,6 @@ export const useInventoryTrends = (params?: {
   company?: string;
   warehouse?: string;
   months?: number;
-  from_date?: string;
-  to_date?: string;
 }) => {
   return useQuery({
     queryKey: ["inventory-trends", params],
@@ -652,15 +584,26 @@ export const useInventoryRisk = (params?: {
   });
 };
 
+export type InventoryHierarchyLevel =
+  | "territory"
+  | "warehouse"
+  | "category"
+  | "item_group"
+  | "brand"
+  | "item";
+
 export const useInventoryHierarchy = (
   params: {
     company?: string;
     warehouse?: string;
-    level: "category" | "item_group" | "brand" | "item" | "warehouse";
+    level: InventoryHierarchyLevel;
+    territory?: string;
+    territories?: string;
     category?: string;
     item_group?: string;
     brand?: string;
     item_code?: string;
+    limit?: number;
   },
   options?: { enabled?: boolean }
 ) => {

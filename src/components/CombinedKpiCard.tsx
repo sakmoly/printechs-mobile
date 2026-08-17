@@ -84,7 +84,7 @@ export const CombinedKpiCard: React.FC<CombinedKpiCardProps> = ({
       previousValue: previousTodayValue,
       icon: "today" as const,
       color: "#3b82f6",
-      gradient: ["#3b82f6", "#2563eb"],
+      gradient: ["#3b82f6", "#2563eb"] as const,
     },
     {
       label: "MTD",
@@ -92,7 +92,7 @@ export const CombinedKpiCard: React.FC<CombinedKpiCardProps> = ({
       previousValue: previousMtdValue,
       icon: "calendar" as const,
       color: "#8b5cf6",
-      gradient: ["#8b5cf6", "#7c3aed"],
+      gradient: ["#8b5cf6", "#7c3aed"] as const,
     },
     {
       label: "YTD",
@@ -100,7 +100,7 @@ export const CombinedKpiCard: React.FC<CombinedKpiCardProps> = ({
       previousValue: previousYtdValue,
       icon: "trending-up" as const,
       color: "#10b981",
-      gradient: ["#10b981", "#059669"],
+      gradient: ["#10b981", "#059669"] as const,
     },
   ];
 

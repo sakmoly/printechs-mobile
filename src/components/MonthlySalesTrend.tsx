@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import { LineChart, BarChart } from "react-native-chart-kit";
 import { Ionicons } from "@expo/vector-icons";
+import { Fonts, Type } from "../theme/typography";
 
 interface MonthlySalesTrendProps {
   labels: string[];
@@ -336,8 +337,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   title: {
-    fontSize: 20,
-    fontWeight: "700",
+    ...Type.sectionTitle,
     color: "#1f2937",
   },
   chartTypeToggle: {
@@ -409,19 +409,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   statCardTitle: {
-    fontSize: 12,
-    fontWeight: "700",
+    ...Type.micro,
     color: "#6b7280",
     textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
   statValue: {
-    fontSize: 18,
-    fontWeight: "900",
+    ...Type.kpi,
     marginBottom: 4,
   },
   statLabel: {
-    fontSize: 11,
+    ...Type.caption,
     color: "#6b7280",
   },
   growthContainer: {

@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, View, Text } from "react-native";
 import { MonthlySalesTrend } from "../MonthlySalesTrend";
 import { TerritoryPieChart } from "../TerritoryPieChart";
 import { DivisionPieChart } from "../DivisionPieChart";
+import { useDimensionEnabled } from "../../hooks/useBootstrap";
 
 interface TrendsTabProps {
   monthlyTrend?: {
@@ -23,24 +24,14 @@ export const TrendsTab: React.FC<TrendsTabProps> = ({
   lastYearTerritoryData,
   lastYearDivisionData,
 }) => {
-  // Debug: Log what data we're receiving
-  console.log("🔍 TrendsTab Data:", {
-    hasMonthlyTrend: !!monthlyTrend,
-    hasTerritoryData: !!territoryData?.length,
-    hasDivisionData: !!divisionData?.length,
-    monthlyTrendKeys: monthlyTrend ? Object.keys(monthlyTrend) : [],
-    territoryCount: territoryData?.length || 0,
-    divisionCount: divisionData?.length || 0,
-    monthlyTrendData: monthlyTrend,
-    territoryData: territoryData,
-    divisionData: divisionData,
-    lastYearTerritoryData: lastYearTerritoryData,
-    lastYearDivisionData: lastYearDivisionData,
-  });
+  const showTerritory = useDimensionEnabled("territory");
+  const showDivision = useDimensionEnabled("division");
+
+  const hasTerritory = showTerritory && !!territoryData?.length;
+  const hasDivision = showDivision && !!divisionData?.length;
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Header */}
       <View style={styles.headerSection}>
         <Text style={styles.headerTitle}>Sales Trends Analysis</Text>
         <Text style={styles.headerSubtitle}>
@@ -48,7 +39,6 @@ export const TrendsTab: React.FC<TrendsTabProps> = ({
         </Text>
       </View>
 
-      {/* Monthly Sales Trend Chart */}
       {monthlyTrend &&
       monthlyTrend.labels &&
       monthlyTrend.current &&
@@ -68,36 +58,35 @@ export const TrendsTab: React.FC<TrendsTabProps> = ({
         </View>
       )}
 
-      {/* Territory Performance Chart - Pie Chart */}
-      {territoryData && territoryData.length > 0 ? (
-        <TerritoryPieChart
-          data={territoryData}
-          title="Territory Performance YTD"
-        />
-      ) : (
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>No territory data available</Text>
-          <Text style={styles.subText}>
-            Territory performance data is not available for the YTD period
-          </Text>
-        </View>
-      )}
+      {showTerritory &&
+        (hasTerritory ? (
+          <TerritoryPieChart
+            data={territoryData!}
+            title="Territory Performance YTD"
+          />
+        ) : (
+          <View style={styles.loadingContainer}>
+            <Text style={styles.loadingText}>No territory data available</Text>
+            <Text style={styles.subText}>
+              Territory performance data is not available for this site
+            </Text>
+          </View>
+        ))}
 
-      {/* Division Performance Chart - Pie Chart */}
-      {divisionData && divisionData.length > 0 ? (
-        <DivisionPieChart
-          data={divisionData}
-          title="Division Performance YTD"
-        />
-      ) : (
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>No division data available</Text>
-          <Text style={styles.subText}>
-            Division performance data is not available for the YTD period. This
-            may be because the API doesn't return division data or it's empty.
-          </Text>
-        </View>
-      )}
+      {showDivision &&
+        (hasDivision ? (
+          <DivisionPieChart
+            data={divisionData!}
+            title="Division Performance YTD"
+          />
+        ) : (
+          <View style={styles.loadingContainer}>
+            <Text style={styles.loadingText}>No division data available</Text>
+            <Text style={styles.subText}>
+              Division is not used or returned empty for this site
+            </Text>
+          </View>
+        ))}
     </ScrollView>
   );
 };
@@ -121,25 +110,23 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontSize: 14,
     color: "#6b7280",
-    fontWeight: "500",
   },
   loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 16,
     alignItems: "center",
-    padding: 40,
-    marginVertical: 20,
   },
   loadingText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#6b7280",
-    textAlign: "center",
+    color: "#374151",
+    marginBottom: 4,
   },
   subText: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#9ca3af",
     textAlign: "center",
-    marginTop: 8,
   },
 });

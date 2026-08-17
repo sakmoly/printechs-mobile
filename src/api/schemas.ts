@@ -53,6 +53,12 @@ export const DataPointSchema = z.object({
 export const KpiResponseSchema = z.object({
   date: z.string(),
   kpis: z.array(KpiCardSchema),
+  series: z
+    .object({
+      sales_daily: z.array(DataPointSchema).optional(),
+      sales_by_territory: z.array(z.record(z.unknown())).optional(),
+    })
+    .optional(),
 });
 
 // Approval schemas

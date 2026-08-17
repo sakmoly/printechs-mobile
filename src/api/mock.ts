@@ -1,4 +1,5 @@
 import { KpiResponse, EmployeeListItem, ApprovalInboxItem } from "./schemas";
+import { isDemoMode } from "./demoMode";
 
 /**
  * Mock data for development and testing
@@ -147,8 +148,16 @@ export const mockApprovals: ApprovalInboxItem[] = [
 ];
 
 /**
- * Toggle to enable/disable mock mode
- * Set to true for development without ERPNext
- * Note: Both Dashboard and Employees now use LIVE data
+ * Toggle to force mock mode for local development only.
+ * Keep false for production / live ERP — sample figures must never show
+ * when a server URL is configured (see isDemoMode / shouldUseMockData).
  */
-export const USE_MOCK_DATA = false; // Set to false to use real API data (API should be whitelisted now)
+export const USE_MOCK_DATA = false;
+
+/**
+ * Sample data is allowed ONLY when no ERP server URL is saved.
+ * With https://www.printechs.com (or any URL) configured → always false.
+ */
+export function shouldUseMockData(): boolean {
+  return USE_MOCK_DATA || isDemoMode();
+}

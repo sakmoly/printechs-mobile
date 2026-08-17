@@ -145,11 +145,17 @@ export const authApi = {
    */
   async getUserDetails() {
     try {
+      const storedUser = await storage.getUser();
+      const username = storedUser?.username || storedUser?.email;
+      if (!username) {
+        return storedUser;
+      }
+
       const response = await http.get<any>(
         "/api/method/frappe.desk.form.load.getdoc",
         {
           doctype: "User",
-          name: "Administrator", // This will be replaced with the actual logged-in user
+          name: username,
         }
       );
 

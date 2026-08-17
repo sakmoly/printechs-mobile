@@ -11,15 +11,14 @@ import {
   TextInput,
   Animated,
   Linking,
-  Platform,
 } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useFocusEffect } from "expo-router";
 import { useApprovalsList, optimizedApis } from "../../src/hooks/useOptimizedApis";
+import type { ApprovalsData } from "../../src/api/optimized-apis";
 import { LoadingScreen } from "../../src/components/LoadingScreen";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useAuthStore } from "../../src/store/auth";
 
 // Configure notification behavior with custom sound
 Notifications.setNotificationHandler({
@@ -37,66 +36,12 @@ export default function ApprovalsScreen() {
   const approvals = data || [];
   const [refreshing, setRefreshing] = useState(false);
   const [prevCount, setPrevCount] = useState(0);
-  const permissions = useAuthStore((state) => state.permissions);
-  const user = useAuthStore((state) => state.user);
-  const pushTokenRegistered = useRef(false);
 
-  // Auto-refresh approvals when screen comes into focus (user navigates to tab)
+  // Auto-refresh approvals when screen comes into focus (user navigates to tab).
+  // Push token registration is centralized in usePushRegistration (root layout).
   useFocusEffect(
     useCallback(() => {
-      console.log("📋 Approvals tab focused - refreshing data...");
       refetch();
-
-      async function registerPushToken() {
-        try {
-          const existingPermission = await Notifications.getPermissionsAsync();
-          let finalStatus = existingPermission.status;
-          if (finalStatus !== "granted") {
-            const requested = await Notifications.requestPermissionsAsync();
-            finalStatus = requested.status;
-          }
-
-          if (finalStatus !== "granted") {
-            console.log("Notification permissions denied");
-            return;
-          }
-
-          if (pushTokenRegistered.current) {
-            return;
-          }
-
-          const tokenResponse = await Notifications.getExpoPushTokenAsync();
-          const expoToken =
-            (tokenResponse as any)?.data ||
-            (tokenResponse as any)?.expoPushToken ||
-            tokenResponse;
-
-          if (!expoToken || typeof expoToken !== "string") {
-            console.log("Unable to retrieve Expo push token");
-            return;
-          }
-
-          const company = permissions.scope?.company || user?.company || null;
-          const territory =
-            permissions.scope?.territories?.[0] ||
-            permissions.scope?.territory ||
-            (user as any)?.territory ||
-            (user as any)?.branch ||
-            null;
-
-          await optimizedApis.storePushToken({
-            expoToken,
-            platform: Platform.OS,
-            territory,
-            company,
-          });
-          pushTokenRegistered.current = true;
-        } catch (error) {
-          console.log("⚠️ Failed to register push token:", error);
-        }
-      }
-
-      registerPushToken();
 
       const receivedSubscription =
         Notifications.addNotificationReceivedListener(() => {
@@ -112,7 +57,7 @@ export default function ApprovalsScreen() {
         receivedSubscription.remove();
         responseSubscription.remove();
       };
-    }, [refetch, permissions.scope, user])
+    }, [refetch])
   );
 
 
@@ -170,7 +115,7 @@ export default function ApprovalsScreen() {
   const [creditData, setCreditData] = useState<any>(null);
 
   // Animation for cards
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim = useRef(new Animated.Value(1)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
   useEffect(() => {
@@ -413,7 +358,8 @@ export default function ApprovalsScreen() {
             </Text>
           </View>
         ) : (
-          approvals.map((item, index) => {
+          approvals.map(
+            (item: ApprovalsData["approvals"][number], index: number) => {
             const colors = getDocumentColor(item.doctype);
             const delay = index * 100;
 

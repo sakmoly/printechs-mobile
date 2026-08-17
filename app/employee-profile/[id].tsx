@@ -15,6 +15,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import QRCode from "react-native-qrcode-svg";
 import { useEmployeesList } from "../../src/hooks/useOptimizedApis";
+import { SafeScreen } from "../../src/components/SafeScreen";
 
 const { width } = Dimensions.get("window");
 
@@ -84,7 +85,7 @@ export default function EmployeeProfileScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -230,7 +231,7 @@ export default function EmployeeProfileScreen() {
           </View>
         </View>
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 
@@ -459,5 +460,10 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     marginTop: 16,
     marginBottom: 24,
+  },
+  backButtonText: {
+    color: "#667eea",
+    fontSize: 16,
+    fontWeight: "600",
   },
 });

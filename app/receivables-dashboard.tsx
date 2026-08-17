@@ -18,114 +18,88 @@ import {
   useReceivablesTrend,
 } from "../src/hooks/useOptimizedApis";
 import { ActivityIndicator } from "react-native";
+import { useAuthStore } from "../src/store/auth";
+import { isDimensionEnabled } from "../src/api/mobileConfig";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 const { width } = Dimensions.get("window");
 
 type TabType = "overview" | "performance" | "trends";
 
-// Mock Data
-const MOCK_DATA = {
+interface ReceivablesPerformance {
+  topOverdueCustomers: { name: string; customer?: string; amount: number }[];
+  topOverdueInvoices: {
+    invoice: string;
+    customer: string;
+    amount: number;
+    days: number;
+  }[];
+  agingBreakdown: { period: string; amount: number }[];
+  collectionEfficiency: number;
+}
+
+interface ReceivablesTrend {
+  arTrend: { month: string; amount: number }[];
+  receivableByTerritory: {
+    territory: string;
+    amount: number;
+    percentage: number;
+  }[];
+  overdueByTerritory: { territory: string; overdue: number }[];
+  monthlyOverdueTrend: { month: string; overdue: number }[];
+  monthlySalesVsCollection: {
+    month: string;
+    sales: number;
+    collection: number;
+  }[];
+}
+
+/** Empty shells only — never invented receivables figures on live */
+const EMPTY_RECEIVABLES = {
   snapshot: {
-    totalUnpaid: 3456789,
-    totalOverdue: 456789,
-    overdue_0_30: 125000,
-    overdue_31_60: 180000,
-    overdue_61_90: 98000,
-    overdue_over_90: 53789,
-    overduePercentage: 13.2,
-    dso: 45,
-    averageCollectionPeriod: 38,
+    totalUnpaid: 0,
+    totalOverdue: 0,
+    overdue_0_30: 0,
+    overdue_31_60: 0,
+    overdue_61_90: 0,
+    overdue_over_90: 0,
+    overduePercentage: 0,
+    dso: 0,
+    averageCollectionPeriod: 0,
   },
   performance: {
-    topOverdueCustomers: [
-      { name: "Al-Sultan Trading", amount: 245000 },
-      { name: "Tech Solutions Ltd", amount: 189000 },
-      { name: "Industrial Supplies Co", amount: 156000 },
-      { name: "Retail Group", amount: 134000 },
-      { name: "ACME Corporation", amount: 125000 },
-    ],
-    topOverdueInvoices: [
-      {
-        invoice: "SI-00123",
-        customer: "Al-Sultan Trading",
-        amount: 85000,
-        days: 45,
-      },
-      {
-        invoice: "SI-00456",
-        customer: "Tech Solutions Ltd",
-        amount: 62000,
-        days: 38,
-      },
-      {
-        invoice: "SI-00789",
-        customer: "Industrial Supplies Co",
-        amount: 45000,
-        days: 72,
-      },
-    ],
-    monthlyPaidUnpaid: [
-      { month: "Jan", paid: 1200000, unpaid: 450000 },
-      { month: "Feb", paid: 1350000, unpaid: 420000 },
-      { month: "Mar", paid: 1280000, unpaid: 480000 },
-      { month: "Apr", paid: 1420000, unpaid: 390000 },
-      { month: "May", paid: 1380000, unpaid: 510000 },
-      { month: "Jun", paid: 1450000, unpaid: 420000 },
-    ],
-    agingBreakdown: [
-      { period: "Current", amount: 2450000 },
-      { period: "1-30 Days", amount: 1250000 },
-      { period: "31-60 Days", amount: 450000 },
-      { period: "61-90 Days", amount: 280000 },
-      { period: "Over 90 Days", amount: 27089 },
-    ],
-    collectionEfficiency: 87.5,
+    topOverdueCustomers: [] as { name: string; amount: number }[],
+    topOverdueInvoices: [] as {
+      invoice: string;
+      customer: string;
+      amount: number;
+      days: number;
+    }[],
+    monthlyPaidUnpaid: [] as { month: string; paid: number; unpaid: number }[],
+    agingBreakdown: [] as { period: string; amount: number }[],
+    collectionEfficiency: 0,
   },
   trend: {
-    arTrend: [
-      { month: "Jul 2023", amount: 3200000 },
-      { month: "Aug 2023", amount: 3350000 },
-      { month: "Sep 2023", amount: 3180000 },
-      { month: "Oct 2023", amount: 3420000 },
-      { month: "Nov 2023", amount: 3560000 },
-      { month: "Dec 2023", amount: 3380000 },
-      { month: "Jan 2024", amount: 3650000 },
-      { month: "Feb 2024", amount: 3450000 },
-      { month: "Mar 2024", amount: 3580000 },
-      { month: "Apr 2024", amount: 3720000 },
-      { month: "May 2024", amount: 3456789 },
-    ],
-    receivableByTerritory: [
-      { territory: "Riyadh", amount: 1856789, percentage: 53.7 },
-      { territory: "Jeddah", amount: 980000, percentage: 28.4 },
-      { territory: "Dammam", amount: 620000, percentage: 17.9 },
-    ],
-    overdueByTerritory: [
-      { territory: "Riyadh", overdue: 245000 },
-      { territory: "Jeddah", overdue: 156000 },
-      { territory: "Dammam", overdue: 55789 },
-    ],
-    monthlyOverdueTrend: [
-      { month: "Jan", overdue: 380000 },
-      { month: "Feb", overdue: 340000 },
-      { month: "Mar", overdue: 420000 },
-      { month: "Apr", overdue: 360000 },
-      { month: "May", overdue: 410000 },
-      { month: "Jun", overdue: 456789 },
-    ],
-    monthlySalesVsCollection: [
-      { month: "Jan", sales: 2200000, collection: 1950000 },
-      { month: "Feb", sales: 2350000, collection: 2080000 },
-      { month: "Mar", sales: 2280000, collection: 2010000 },
-      { month: "Apr", sales: 2420000, collection: 2150000 },
-      { month: "May", sales: 2380000, collection: 2100000 },
-      { month: "Jun", sales: 2450000, collection: 2180000 },
-    ],
+    arTrend: [] as { month: string; amount: number }[],
+    receivableByTerritory: [] as {
+      territory: string;
+      amount: number;
+      percentage: number;
+    }[],
+    overdueByTerritory: [] as { territory: string; overdue: number }[],
+    monthlyOverdueTrend: [] as { month: string; overdue: number }[],
+    monthlySalesVsCollection: [] as {
+      month: string;
+      sales: number;
+      collection: number;
+    }[],
   },
 };
 
 export default function ReceivablesDashboardScreen() {
   const [activeTab, setActiveTab] = useState<TabType>("overview");
+  const mobileConfig = useAuthStore((s) => s.mobileConfig);
+  const showTerritory = isDimensionEnabled(mobileConfig, "territory");
 
   // Fetch real API data
   const {
@@ -168,8 +142,7 @@ export default function ReceivablesDashboardScreen() {
 
   // Snapshot Tab
   const renderOverviewTab = () => {
-    // Use real API data or fallback to mock data
-    const data = snapshotData || MOCK_DATA.snapshot;
+    const data = snapshotData || EMPTY_RECEIVABLES.snapshot;
 
     if (snapshotLoading) {
       return (
@@ -219,7 +192,7 @@ export default function ReceivablesDashboardScreen() {
             </View>
           ) : (
             (() => {
-              const perf = performanceData || MOCK_DATA.performance;
+              const perf = performanceData || EMPTY_RECEIVABLES.performance;
               const raw = (perf.agingBreakdown || []) as Array<{
                 period: string;
                 amount: number;
@@ -407,8 +380,8 @@ export default function ReceivablesDashboardScreen() {
 
   // Performance Tab
   const renderPerformanceTab = () => {
-    // Use real API data or fallback to mock data
-    const data = performanceData || MOCK_DATA.performance;
+    const data = (performanceData ||
+      EMPTY_RECEIVABLES.performance) as ReceivablesPerformance;
 
     if (performanceLoading) {
       return (
@@ -531,8 +504,7 @@ export default function ReceivablesDashboardScreen() {
 
   // Trend Tab
   const renderTrendsTab = () => {
-    // Use real API data or fallback to mock data
-    const data = trendData || MOCK_DATA.trend;
+    const data = (trendData || EMPTY_RECEIVABLES.trend) as ReceivablesTrend;
 
     if (trendLoading) {
       return (
@@ -555,10 +527,11 @@ export default function ReceivablesDashboardScreen() {
 
     return (
       <View style={styles.tabContent}>
-        {/* Receivable by Territory */}
+        {/* Receivable by Territory — hidden when site does not use territory */}
+        {showTerritory && (
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Receivable by Territory</Text>
-          {data.receivableByTerritory.map((territory, index) => (
+          {(data.receivableByTerritory || []).map((territory, index) => (
             <TouchableOpacity
               key={index}
               style={styles.territoryRow}
@@ -593,11 +566,13 @@ export default function ReceivablesDashboardScreen() {
             </TouchableOpacity>
           ))}
         </View>
+        )}
 
         {/* Overdue by Territory */}
+        {showTerritory && (
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Overdue by Territory</Text>
-          {data.overdueByTerritory.map((territory, index) => (
+          {(data.overdueByTerritory || []).map((territory, index) => (
             <TouchableOpacity
               key={index}
               style={styles.overdueRow}
@@ -625,6 +600,7 @@ export default function ReceivablesDashboardScreen() {
             </TouchableOpacity>
           ))}
         </View>
+        )}
 
         {/* Monthly Overdue Trend */}
         <View style={styles.sectionCard}>
@@ -830,7 +806,7 @@ export default function ReceivablesDashboardScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <LinearGradient
         colors={["#667eea", "#764ba2"]}
@@ -929,7 +905,7 @@ export default function ReceivablesDashboardScreen() {
         {activeTab === "performance" && renderPerformanceTab()}
         {activeTab === "trends" && renderTrendsTab()}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

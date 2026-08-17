@@ -161,7 +161,7 @@ export const TerritoryPieChart: React.FC<TerritoryPieChartProps> = ({
         <View style={styles.cardsContainer}>
           {data.map((item, index) => (
             <View
-              key={item.territory}
+              key={`${item.territory}-${index}`}
               style={[
                 styles.dataCard,
                 { borderLeftColor: colors[index % colors.length] },

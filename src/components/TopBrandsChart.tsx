@@ -254,13 +254,6 @@ export const TopBrandsChart: React.FC<TopBrandsChartProps> = ({
               yAxisSuffix=""
               withCustomBarColorFromData={true}
               flatColor={true}
-              formatYLabel={(value) => {
-                const num = parseFloat(value);
-                if (metric === "margin") return `${num.toFixed(0)}%`;
-                if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-                if (num >= 1000) return `${(num / 1000).toFixed(0)}K`;
-                return num.toFixed(0);
-              }}
             />
           ) : (
             <View style={styles.emptyState}>

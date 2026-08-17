@@ -2,6 +2,7 @@ import React from "react";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { WebView } from "react-native-webview";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 export default function FlipWeb() {
   const params = useLocalSearchParams();
@@ -9,7 +10,7 @@ export default function FlipWeb() {
   const url = (params.url as string) || "";
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       <Stack.Screen
         options={{
           title,
@@ -40,7 +41,7 @@ export default function FlipWeb() {
           <ActivityIndicator size="large" color="#667eea" />
         </View>
       )}
-    </View>
+    </SafeScreen>
   );
 }
 

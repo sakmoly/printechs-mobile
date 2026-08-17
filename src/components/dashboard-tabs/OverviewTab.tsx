@@ -1,8 +1,7 @@
 import React from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
-import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { GaugeChart } from "../GaugeChart";
+import { Fonts, Type } from "../../theme/typography";
 
 interface YTDMetrics {
   netSales: {
@@ -52,7 +51,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   ytdMetrics,
   formatCurrency,
 }) => {
-  // Show no data state if metrics is null or missing
   if (!ytdMetrics) {
     return (
       <View style={styles.loadingContainer}>
@@ -71,23 +69,75 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   };
 
   const getChangeColor = (changePercent: number) => {
-    if (changePercent > 0) return "#10b981";
-    if (changePercent < 0) return "#ef4444";
+    if (changePercent > 0) return "#059669";
+    if (changePercent < 0) return "#dc2626";
     return "#6b7280";
   };
 
+  const MetricRow = ({
+    title,
+    current,
+    previous,
+    changePercent,
+    format = "currency",
+  }: {
+    title: string;
+    current: number;
+    previous: number;
+    changePercent: number;
+    format?: "currency" | "number" | "percent";
+  }) => (
+    <View style={styles.metricCard}>
+      <View style={styles.metricHeader}>
+        <Text style={styles.metricTitle}>{title}</Text>
+        <View style={styles.changeContainer}>
+          <Ionicons
+            name={getChangeIcon(changePercent)}
+            size={14}
+            color={getChangeColor(changePercent)}
+          />
+          <Text
+            style={[styles.changeText, { color: getChangeColor(changePercent) }]}
+          >
+            {Math.abs(changePercent).toFixed(1)}%
+          </Text>
+        </View>
+      </View>
+      <View style={styles.metricValues}>
+        <View style={styles.valueColumn}>
+          <Text style={styles.valueLabel}>Current YTD</Text>
+          <Text style={styles.valueNumber}>
+            {format === "percent"
+              ? `${current.toFixed(1)}%`
+              : format === "number"
+                ? current.toLocaleString()
+                : formatCurrency(current)}
+          </Text>
+        </View>
+        <View style={styles.valueColumn}>
+          <Text style={styles.valueLabel}>Last Year</Text>
+          <Text style={styles.valueNumberSecondary}>
+            {format === "percent"
+              ? `${previous.toFixed(1)}%`
+              : format === "number"
+                ? previous.toLocaleString()
+                : formatCurrency(previous)}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Header */}
       <View style={styles.headerSection}>
         <Text style={styles.headerTitle}>Year-to-Date vs Last Year</Text>
-        <Text style={styles.headerSubtitle}>Performance Comparison</Text>
+        <Text style={styles.headerSubtitle}>Performance comparison</Text>
       </View>
 
-      {/* Net Sales */}
-      <View style={styles.metricCard}>
+      <View style={styles.heroCard}>
         <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Net Sales</Text>
+          <Text style={styles.heroEyebrow}>Net Sales</Text>
           <View style={styles.changeContainer}>
             <Ionicons
               name={getChangeIcon(ytdMetrics.netSales.changePercent)}
@@ -100,211 +150,50 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                 { color: getChangeColor(ytdMetrics.netSales.changePercent) },
               ]}
             >
-              {Math.abs(ytdMetrics.netSales.changePercent).toFixed(1)}%
+              {Math.abs(ytdMetrics.netSales.changePercent).toFixed(1)}% YoY
             </Text>
           </View>
         </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.netSales.current)}
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.netSales.previous)}
-            </Text>
-          </View>
-        </View>
+        <Text style={styles.heroValue}>
+          {formatCurrency(ytdMetrics.netSales.current)}
+        </Text>
+        <Text style={styles.heroPrev}>
+          Last year {formatCurrency(ytdMetrics.netSales.previous)}
+        </Text>
       </View>
 
-      {/* Total Invoices */}
-      <View style={styles.metricCard}>
-        <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Total Invoices</Text>
-          <View style={styles.changeContainer}>
-            <Ionicons
-              name={getChangeIcon(ytdMetrics.totalInvoices.changePercent)}
-              size={16}
-              color={getChangeColor(ytdMetrics.totalInvoices.changePercent)}
-            />
-            <Text
-              style={[
-                styles.changeText,
-                {
-                  color: getChangeColor(ytdMetrics.totalInvoices.changePercent),
-                },
-              ]}
-            >
-              {Math.abs(ytdMetrics.totalInvoices.changePercent).toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {ytdMetrics.totalInvoices.current.toLocaleString()}
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {ytdMetrics.totalInvoices.previous.toLocaleString()}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Average Invoice */}
-      <View style={styles.metricCard}>
-        <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Average Invoice</Text>
-          <View style={styles.changeContainer}>
-            <Ionicons
-              name={getChangeIcon(ytdMetrics.avgInvoice.changePercent)}
-              size={16}
-              color={getChangeColor(ytdMetrics.avgInvoice.changePercent)}
-            />
-            <Text
-              style={[
-                styles.changeText,
-                { color: getChangeColor(ytdMetrics.avgInvoice.changePercent) },
-              ]}
-            >
-              {Math.abs(ytdMetrics.avgInvoice.changePercent).toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.avgInvoice.current)}
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.avgInvoice.previous)}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Gross Profit Margin */}
-      <View style={styles.metricCard}>
-        <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Gross Profit Margin</Text>
-          <View style={styles.changeContainer}>
-            <Ionicons
-              name={getChangeIcon(ytdMetrics.grossProfitMargin.changePercent)}
-              size={16}
-              color={getChangeColor(ytdMetrics.grossProfitMargin.changePercent)}
-            />
-            <Text
-              style={[
-                styles.changeText,
-                {
-                  color: getChangeColor(
-                    ytdMetrics.grossProfitMargin.changePercent
-                  ),
-                },
-              ]}
-            >
-              {Math.abs(ytdMetrics.grossProfitMargin.changePercent).toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {ytdMetrics.grossProfitMargin.current.toFixed(1)}%
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {ytdMetrics.grossProfitMargin.previous.toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Cost of Goods */}
-      <View style={styles.metricCard}>
-        <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Cost of Goods</Text>
-          <View style={styles.changeContainer}>
-            <Ionicons
-              name={getChangeIcon(ytdMetrics.costOfGoods.changePercent)}
-              size={16}
-              color={getChangeColor(ytdMetrics.costOfGoods.changePercent)}
-            />
-            <Text
-              style={[
-                styles.changeText,
-                { color: getChangeColor(ytdMetrics.costOfGoods.changePercent) },
-              ]}
-            >
-              {Math.abs(ytdMetrics.costOfGoods.changePercent).toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.costOfGoods.current)}
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.costOfGoods.previous)}
-            </Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Gross Profit */}
-      <View style={styles.metricCard}>
-        <View style={styles.metricHeader}>
-          <Text style={styles.metricTitle}>Gross Profit</Text>
-          <View style={styles.changeContainer}>
-            <Ionicons
-              name={getChangeIcon(ytdMetrics.grossProfit.changePercent)}
-              size={16}
-              color={getChangeColor(ytdMetrics.grossProfit.changePercent)}
-            />
-            <Text
-              style={[
-                styles.changeText,
-                { color: getChangeColor(ytdMetrics.grossProfit.changePercent) },
-              ]}
-            >
-              {Math.abs(ytdMetrics.grossProfit.changePercent).toFixed(1)}%
-            </Text>
-          </View>
-        </View>
-        <View style={styles.metricValues}>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Current YTD</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.grossProfit.current)}
-            </Text>
-          </View>
-          <View style={styles.valueColumn}>
-            <Text style={styles.valueLabel}>Last Year</Text>
-            <Text style={styles.valueNumber}>
-              {formatCurrency(ytdMetrics.grossProfit.previous)}
-            </Text>
-          </View>
-        </View>
-      </View>
+      <MetricRow
+        title="Total Invoices"
+        current={ytdMetrics.totalInvoices.current}
+        previous={ytdMetrics.totalInvoices.previous}
+        changePercent={ytdMetrics.totalInvoices.changePercent}
+        format="number"
+      />
+      <MetricRow
+        title="Average Invoice"
+        current={ytdMetrics.avgInvoice.current}
+        previous={ytdMetrics.avgInvoice.previous}
+        changePercent={ytdMetrics.avgInvoice.changePercent}
+      />
+      <MetricRow
+        title="Gross Profit Margin"
+        current={ytdMetrics.grossProfitMargin.current}
+        previous={ytdMetrics.grossProfitMargin.previous}
+        changePercent={ytdMetrics.grossProfitMargin.changePercent}
+        format="percent"
+      />
+      <MetricRow
+        title="Cost of Goods"
+        current={ytdMetrics.costOfGoods.current}
+        previous={ytdMetrics.costOfGoods.previous}
+        changePercent={ytdMetrics.costOfGoods.changePercent}
+      />
+      <MetricRow
+        title="Gross Profit"
+        current={ytdMetrics.grossProfit.current}
+        previous={ytdMetrics.grossProfit.previous}
+        changePercent={ytdMetrics.grossProfit.changePercent}
+      />
     </ScrollView>
   );
 };
@@ -316,42 +205,56 @@ const styles = StyleSheet.create({
     backgroundColor: "#f8fafc",
   },
   headerSection: {
-    marginBottom: 24,
-    alignItems: "center",
+    marginBottom: 20,
   },
   headerTitle: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#1f2937",
+    ...Type.sectionTitle,
+    color: "#111827",
     marginBottom: 4,
   },
   headerSubtitle: {
-    fontSize: 14,
+    ...Type.body,
     color: "#6b7280",
-    fontWeight: "500",
+  },
+  heroCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    padding: 20,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#e0e7ff",
+  },
+  heroEyebrow: {
+    ...Type.label,
+    color: "#667eea",
+    textTransform: "uppercase",
+  },
+  heroValue: {
+    ...Type.hero,
+    color: "#111827",
+    marginTop: 8,
+  },
+  heroPrev: {
+    ...Type.caption,
+    color: "#6b7280",
+    marginTop: 8,
   },
   metricCard: {
     backgroundColor: "#ffffff",
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
+    borderColor: "#eef2ff",
   },
   metricHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 12,
   },
   metricTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+    ...Type.cardTitle,
     color: "#1f2937",
   },
   changeContainer: {
@@ -364,30 +267,30 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   changeText: {
-    fontSize: 12,
-    fontWeight: "600",
+    ...Type.caption,
+    fontFamily: Fonts.bodyBold,
   },
   metricValues: {
     flexDirection: "row",
-    gap: 20,
+    gap: 16,
   },
   valueColumn: {
     flex: 1,
-    alignItems: "center",
   },
   valueLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#6b7280",
-    marginBottom: 8,
+    ...Type.micro,
+    color: "#9ca3af",
+    marginBottom: 6,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
   valueNumber: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: "#1f2937",
-    textAlign: "center",
+    ...Type.kpiCompact,
+    color: "#111827",
+  },
+  valueNumberSecondary: {
+    ...Type.kpiCompact,
+    fontFamily: Fonts.displaySemi,
+    color: "#6b7280",
   },
   loadingContainer: {
     flex: 1,
@@ -396,13 +299,12 @@ const styles = StyleSheet.create({
     padding: 40,
   },
   loadingText: {
-    fontSize: 16,
-    fontWeight: "600",
+    ...Type.sectionTitle,
     color: "#6b7280",
     textAlign: "center",
   },
   subText: {
-    fontSize: 14,
+    ...Type.body,
     color: "#9ca3af",
     textAlign: "center",
     marginTop: 8,

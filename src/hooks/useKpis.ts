@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { erpApi, type KpiParams } from "../api/erp";
-import { USE_MOCK_DATA, mockKpiData } from "../api/mock";
+import { shouldUseMockData, mockKpiData } from "../api/mock";
 
 export const useKpis = (params: KpiParams = {}) => {
   return useQuery({
     queryKey: ["kpis", params],
     queryFn: async () => {
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         // Simulate network delay
         await new Promise((resolve) => setTimeout(resolve, 800));
         return mockKpiData;

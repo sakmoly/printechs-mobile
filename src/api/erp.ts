@@ -44,11 +44,11 @@ export const erpApi = {
 
       console.log(
         "Calling employees API endpoint:",
-        "/api/method/printechs_utility.employee.get_employees"
+        "/api/method/erp_analysis.employee.get_employees"
       );
 
       const response = await http.post<any>(
-        "/api/method/printechs_utility.employee.get_employees",
+        "/api/method/erp_analysis.employee.get_employees",
         params
       );
 
@@ -116,11 +116,11 @@ export const erpApi = {
       console.log("Fetching employee for user email:", user.email);
       console.log(
         "Calling API endpoint:",
-        "/api/method/printechs_utility.employee.get_employees"
+        "/api/method/erp_analysis.employee.get_employees"
       );
 
       const response = await http.post<any>(
-        "/api/method/printechs_utility.employee.get_employees",
+        "/api/method/erp_analysis.employee.get_employees",
         {}
       );
 
@@ -188,6 +188,7 @@ export const erpApi = {
       // Import http and auth store to get configured server URL
       const { http } = await import("./http");
       const { useAuthStore } = await import("../store/auth");
+      const { filterBaParams } = await import("./apiResilience");
 
       // Get the configured server URL from auth store
       const serverConfig = useAuthStore.getState().serverConfig;
@@ -199,13 +200,13 @@ export const erpApi = {
       console.log("Current HTTP base URL:", http.getBaseUrl());
       console.log(
         "Calling API endpoint:",
-        "/api/method/printechs_utility.sales_kpis.get_dashboard_kpis"
+        "/api/method/erp_analysis.sales_kpis.get_dashboard_kpis"
       );
       console.log("With params:", params);
 
       const response = await http.post<any>(
-        "/api/method/printechs_utility.sales_kpis.get_dashboard_kpis",
-        params
+        "/api/method/erp_analysis.sales_kpis.get_dashboard_kpis",
+        filterBaParams(params as any, useAuthStore.getState().mobileConfig)
       );
 
       // Debug logging
@@ -257,13 +258,16 @@ export const erpApi = {
       console.log("Current HTTP base URL:", http.getBaseUrl());
       console.log(
         "Calling API endpoint:",
-        "/api/method/printechs_utility.sales_kpis.get_sales_dashboard"
+        "/api/method/erp_analysis.sales_kpis.get_sales_dashboard"
       );
       console.log("With params:", params);
 
       const response = await http.post<any>(
-        "/api/method/printechs_utility.sales_kpis.get_sales_dashboard",
-        params
+        "/api/method/erp_analysis.sales_kpis.get_sales_dashboard",
+        (await import("./apiResilience")).filterBaParams(
+          params as any,
+          useAuthStore.getState().mobileConfig
+        )
       );
 
       // Debug logging
@@ -306,7 +310,7 @@ export const erpApi = {
 
   async getApprovalsInbox(): Promise<ApprovalInboxItem[]> {
     const response = await http.post<any>(
-      "/api/method/printechs.mobile.approvals.inbox"
+      "/api/method/erp_analysis.approvals.inbox"
     );
 
     const parsed = z
@@ -322,7 +326,7 @@ export const erpApi = {
     comment?: string;
   }): Promise<{ ok: boolean; state: string }> {
     const response = await http.post<any>(
-      "/api/method/printechs.mobile.approvals.apply",
+      "/api/method/erp_analysis.approvals.apply",
       params
     );
 

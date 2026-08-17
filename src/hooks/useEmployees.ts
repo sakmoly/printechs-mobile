@@ -1,12 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { erpApi, type ListParams } from "../api/erp";
-import { USE_MOCK_DATA, mockEmployees } from "../api/mock";
+import { shouldUseMockData, mockEmployees } from "../api/mock";
 
 export const useEmployees = (params: ListParams = {}) => {
   return useQuery({
     queryKey: ["employees", params],
     queryFn: async () => {
-      if (USE_MOCK_DATA) {
+      if (shouldUseMockData()) {
         await new Promise((resolve) => setTimeout(resolve, 600));
         return mockEmployees;
       }

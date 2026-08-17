@@ -1,59 +1,104 @@
 import { http } from "./http";
 import { useAuthStore } from "../store/auth";
 import { oauthApi } from "./oauth";
+import { isDemoMode } from "./demoMode";
+import { shouldUseMockData } from "./mock";
+import {
+  getDemoCataloguesList,
+  getDemoDashboardData,
+  getDemoInventoryHierarchy,
+  getDemoInventoryPerformance,
+  getDemoInventoryRisk,
+  getDemoInventorySnapshot,
+  getDemoInventoryTrends,
+  getDemoReceivablesPerformance,
+  getDemoReceivablesSnapshot,
+  getDemoReceivablesTrend,
+} from "./demoMocks";
 import { isAxiosError } from "axios";
 import { z } from "zod";
+import { isApiEnabled, isDimensionEnabled } from "./mobileConfig";
+import {
+  filterBaParams,
+  pickBaParams,
+  softParseOrRaw,
+} from "./apiResilience";
+import { ERP_ANALYSIS } from "./endpoints";
+import { logger } from "../utils/logger";
 
 /** Avoid repeating the same 417 guidance every focus/navigation */
 let pushTokenStore417Logged = false;
 
-// ========== SCHEMAS FOR SINGLE API RESPONSES ==========
+/** Lenient number — missing/null from other clients → 0 */
+const zNum = z.coerce.number().optional().default(0);
+const zStr = z.coerce.string().optional().default("");
 
-// Dashboard Screen - Single API Response Schema
+// ========== SCHEMAS FOR SINGLE API RESPONSES ==========
+// All schemas are multi-client safe: optional dims default to empty / "".
+
 const DashboardResponseSchema = z.object({
-  kpis: z.array(
-    z.object({
-      id: z.string(),
-      title: z.string(),
-      value: z.number(),
-      change_percentage: z.number(),
-      change_direction: z.enum(["up", "down", "neutral"]),
-      currency: z.string().optional(),
-      unit: z.string().optional(),
-      previous_year_value: z.number().optional(), // Add previous year value
+  kpis: z
+    .array(
+      z.object({
+        id: zStr,
+        title: zStr,
+        value: zNum,
+        change_percentage: zNum,
+        change_direction: z
+          .enum(["up", "down", "neutral"])
+          .optional()
+          .default("neutral"),
+        currency: z.string().optional(),
+        unit: z.string().optional(),
+        previous_year_value: z.number().optional(),
+      })
+    )
+    .optional()
+    .default([]),
+  user_profile: z
+    .object({
+      image_url: zStr,
+      employee_name: zStr,
+      company: zStr,
+      designation: zStr,
+      branch: zStr,
+      cell_number: zStr,
+      company_email: zStr,
+      current_address: zStr,
+      country: zStr,
     })
-  ),
-  user_profile: z.object({
-    image_url: z.string(),
-    employee_name: z.string(),
-    company: z.string(),
-    designation: z.string(),
-    branch: z.string(),
-    cell_number: z.string(),
-    company_email: z.string(),
-    current_address: z.string(),
-    country: z.string(),
-  }),
+    .optional()
+    .default({
+      image_url: "",
+      employee_name: "",
+      company: "",
+      designation: "",
+      branch: "",
+      cell_number: "",
+      company_email: "",
+      current_address: "",
+      country: "",
+    }),
   sales_dashboard: z
     .object({
       metrics: z
         .object({
-          totalSales: z.number(),
-          totalInvoices: z.number(),
-          avgInvoiceValue: z.number(),
-          costOfGoodsSold: z.number(),
-          grossProfit: z.number(),
-          grossProfitPercentage: z.number(),
+          totalSales: zNum,
+          totalInvoices: zNum,
+          avgInvoiceValue: zNum,
+          costOfGoodsSold: zNum,
+          grossProfit: zNum,
+          grossProfitPercentage: zNum,
         })
         .nullable()
         .optional(),
       top_brands: z
         .array(
           z.object({
-            brand: z.string(),
-            total_sales: z.number(),
-            sold_qty: z.number().optional(), // SUM(sold_qty) from backend
-            profit: z.number().optional(), // Profit amount from backend
+            brand: zStr,
+            total_sales: zNum,
+            sold_qty: z.number().optional(),
+            profit: z.number().optional(),
             total_quantity: z.number().optional(),
             total_cost: z.number().optional(),
             gross_profit_amount: z.number().optional(),
@@ -61,17 +106,19 @@ const DashboardResponseSchema = z.object({
             invoice_count: z.number().optional(),
           })
         )
-        .optional(),
+        .optional()
+        .default([]),
       top_customers: z
         .array(
           z.object({
-            customer: z.string(),
+            customer: zStr,
             customer_name: z.string().optional(),
-            total_sales: z.number(),
+            total_sales: zNum,
             invoice_count: z.number().optional(),
           })
         )
-        .optional(),
+        .optional()
+        .default([]),
       monthly_trend: z
         .object({
           labels: z.array(z.string()).optional(),
@@ -80,24 +127,33 @@ const DashboardResponseSchema = z.object({
         })
         .nullable()
         .optional(),
-      territory: z
-        .array(
-          z.object({
-            territory: z.string(),
-            total_sales: z.number(),
-            invoice_count: z.number(),
-          })
-        )
-        .optional(),
+        territory: z
+          .array(
+            z
+              .object({
+                territory: zStr,
+                total_sales: zNum,
+                invoice_count: zNum,
+                sales_ly: z.number().optional(),
+                value_ly: z.number().optional(),
+                previous_year_value: z.number().optional(),
+                change_pct: z.number().optional(),
+                change_percentage: z.number().optional(),
+              })
+              .passthrough()
+          )
+          .optional()
+          .default([]),
       division: z
         .array(
           z.object({
-            division: z.string(),
-            total_sales: z.number(),
-            margin_percentage: z.number(),
+            division: zStr,
+            total_sales: zNum,
+            margin_percentage: zNum,
           })
         )
-        .optional(),
+        .optional()
+        .default([]),
     })
     .optional(),
   charts: z
@@ -107,161 +163,197 @@ const DashboardResponseSchema = z.object({
       sales_by_division: z.array(z.any()).optional(),
     })
     .optional(),
-  date: z.string(),
+  date: zStr,
   from_date: z.string().optional(),
   to_date: z.string().optional(),
 });
 
-// Employees Screen - Single API Response Schema
 const EmployeesResponseSchema = z.object({
-  employees: z.array(
-    z.object({
-      name: z.string(),
-      employee_name: z.string(),
-      designation: z.string(),
-      department: z.string(),
-      company: z.string(),
-      photo_url: z.string(),
-      company_email: z.string(),
-      cell_number: z.string(),
-      branch: z.string().optional(),
-    })
-  ),
-  total_count: z.number(),
-  departments: z.array(z.string()),
-  designations: z.array(z.string()),
+  employees: z
+    .array(
+      z.object({
+        name: zStr,
+        employee_name: zStr,
+        designation: zStr,
+        department: zStr,
+        company: zStr,
+        photo_url: zStr,
+        image: z.string().optional(),
+        company_email: zStr,
+        cell_number: zStr,
+        branch: z.string().optional(),
+      })
+    )
+    .optional()
+    .default([]),
+  total_count: zNum,
+  departments: z.array(z.string()).optional().default([]),
+  designations: z.array(z.string()).optional().default([]),
 });
 
-// Approvals Screen - Single API Response Schema
 const ApprovalsResponseSchema = z.object({
-  approvals: z.array(
-    z.object({
-      id: z.string(),
-      doctype: z.string(), // Sales Invoice, Delivery Note, Material Request
-      name: z.string(), // Document name/number
-      customer_name: z.string(),
-      customer: z.string().optional().nullable(),
-      total_quantity: z.number(),
-      total_amount: z.number(), // Amount without VAT
-      vat_amount: z.number(),
-      total_with_vat: z.number(), // Amount with VAT
-      status: z.string(),
-      posting_date: z.string(),
-      due_date: z.string().optional().nullable(),
-      branch: z.string().optional().nullable(),
-      territory: z.string().optional(), // Territory/Region for filtering
-      company: z.string().optional().nullable(),
-      // Customer credit information
-      customer_outstanding: z.number().optional().nullable(), // Total outstanding amount
-      customer_overdue: z.number().optional().nullable(), // Overdue amount
-      // Aging buckets
-      outstanding_0_30: z.number().optional().nullable(), // Outstanding 0-30 days
-      outstanding_31_60: z.number().optional().nullable(), // Outstanding 31-60 days
-      outstanding_61_90: z.number().optional().nullable(), // Outstanding 61-90 days
-      outstanding_over_90: z.number().optional().nullable(), // Outstanding over 90 days
-    })
-  ),
-  total_pending: z.number(),
-  total_approved: z.number().optional(), // Make optional since API doesn't always include
-  total_rejected: z.number().optional(), // Make optional since API doesn't always include
-  sales_invoices: z.number().optional(), // Additional field from API
-  delivery_notes: z.number().optional(), // Additional field from API
-  material_requests: z.number().optional(), // Additional field from API
-  user_territory: z.string().optional(), // Territory of the logged-in user
+  approvals: z
+    .array(
+      z.object({
+        id: zStr,
+        doctype: zStr,
+        name: zStr,
+        customer_name: zStr,
+        customer: z.string().optional().nullable(),
+        total_quantity: zNum,
+        total_amount: zNum,
+        vat_amount: zNum,
+        total_with_vat: zNum,
+        status: zStr,
+        posting_date: zStr,
+        due_date: z.string().optional().nullable(),
+        branch: z.string().optional().nullable(),
+        territory: z.string().optional(),
+        company: z.string().optional().nullable(),
+        customer_outstanding: z.number().optional().nullable(),
+        customer_overdue: z.number().optional().nullable(),
+        outstanding_0_30: z.number().optional().nullable(),
+        outstanding_31_60: z.number().optional().nullable(),
+        outstanding_61_90: z.number().optional().nullable(),
+        outstanding_over_90: z.number().optional().nullable(),
+      })
+    )
+    .optional()
+    .default([]),
+  total_pending: zNum,
+  total_approved: z.number().optional(),
+  total_rejected: z.number().optional(),
+  sales_invoices: z.number().optional(),
+  delivery_notes: z.number().optional(),
+  material_requests: z.number().optional(),
+  user_territory: z.string().optional(),
 });
 
-// User Profile Screen - Single API Response Schema
 const UserProfileResponseSchema = z.object({
   user_profile: z.object({
-    image_url: z.string(),
-    employee_name: z.string(),
-    company: z.string(),
-    designation: z.string(),
-    branch: z.string(),
-    territory: z.string().optional(), // Add territory field for approval filtering
-    cell_number: z.string(),
-    company_email: z.string(),
-    current_address: z.string(),
-    country: z.string(),
+    image_url: zStr,
+    employee_name: zStr,
+    company: zStr,
+    designation: zStr,
+    branch: zStr,
+    territory: z.string().optional(),
+    cell_number: zStr,
+    company_email: zStr,
+    current_address: zStr,
+    country: zStr,
   }),
-  qr_data: z.string(), // Pre-generated vCard data
+  qr_data: zStr,
 });
 
-// Receivables Snapshot Schema
 const ReceivablesSnapshotResponseSchema = z.object({
-  totalUnpaid: z.number(),
-  totalOverdue: z.number(),
+  totalUnpaid: zNum,
+  totalOverdue: zNum,
   overdueLt400: z.number().optional().default(0),
   oldBalance: z.number().optional().default(0),
-  overdue_0_30: z.number(),
-  overdue_31_60: z.number(),
-  overdue_61_90: z.number(),
-  overdue_over_90: z.number(),
-  overduePercentage: z.number(),
-  dso: z.number(),
-  averageCollectionPeriod: z.number(),
+  overdue_0_30: zNum,
+  overdue_31_60: zNum,
+  overdue_61_90: zNum,
+  overdue_over_90: zNum,
+  overduePercentage: zNum,
+  dso: zNum,
+  averageCollectionPeriod: zNum,
 });
 
-// Receivables Performance Schema
 const ReceivablesPerformanceResponseSchema = z.object({
-  topOverdueCustomers: z.array(
-    z.object({
-      name: z.string(),
-      customer: z.string(),
-      amount: z.number(),
-    })
-  ),
-  topOverdueInvoices: z.array(
-    z.object({
-      invoice: z.string(),
-      customer: z.string(),
-      amount: z.number(),
-      days: z.number(),
-    })
-  ),
-  agingBreakdown: z.array(
-    z.object({
-      period: z.string(),
-      amount: z.number(),
-    })
-  ),
-  collectionEfficiency: z.number(),
+  topOverdueCustomers: z
+    .array(
+      z.object({
+        name: zStr,
+        customer: zStr,
+        amount: zNum,
+      })
+    )
+    .optional()
+    .default([]),
+  topOverdueInvoices: z
+    .array(
+      z.object({
+        invoice: zStr,
+        customer: zStr,
+        amount: zNum,
+        days: zNum,
+      })
+    )
+    .optional()
+    .default([]),
+  agingBreakdown: z
+    .array(
+      z.object({
+        period: zStr,
+        amount: zNum,
+      })
+    )
+    .optional()
+    .default([]),
+  collectionEfficiency: zNum,
 });
 
 const ReceivablesTrendResponseSchema = z.object({
-  arTrend: z.array(
-    z.object({
-      month: z.string(),
-      amount: z.number(),
-    })
-  ),
-  receivableByTerritory: z.array(
-    z.object({
-      territory: z.string(),
-      amount: z.number(),
-      percentage: z.number(),
-    })
-  ),
-  overdueByTerritory: z.array(
-    z.object({
-      territory: z.string(),
-      overdue: z.number(),
-    })
-  ),
-  monthlyOverdueTrend: z.array(
-    z.object({
-      month: z.string(),
-      overdue: z.number(),
-    })
-  ),
-  monthlySalesVsCollection: z.array(
-    z.object({
-      month: z.string(),
-      sales: z.number(),
-      collection: z.number(),
-    })
-  ),
+  arTrend: z
+    .array(z.object({ month: zStr, amount: zNum }))
+    .optional()
+    .default([]),
+  receivableByTerritory: z
+    .array(
+      z.object({
+        territory: zStr,
+        amount: zNum,
+        percentage: zNum,
+      })
+    )
+    .optional()
+    .default([]),
+  overdueByTerritory: z
+    .array(z.object({ territory: zStr, overdue: zNum }))
+    .optional()
+    .default([]),
+  monthlyOverdueTrend: z
+    .array(z.object({ month: zStr, overdue: zNum }))
+    .optional()
+    .default([]),
+  monthlySalesVsCollection: z
+    .array(
+      z.object({
+        month: zStr,
+        sales: zNum,
+        collection: zNum,
+      })
+    )
+    .optional()
+    .default([]),
 });
+
+// ========== MULTI-CLIENT HELPERS ==========
+
+function baConfig() {
+  return useAuthStore.getState().mobileConfig;
+}
+
+/** Skip call when get_mobile_config.apis marks the method false */
+function getDisabledFallback<T>(
+  methodKey: string,
+  fallback: T
+): { skip: true; value: T } | { skip: false } {
+  if (!isApiEnabled(baConfig(), methodKey)) {
+    console.log(`ℹ️ API disabled by site config, skipping: ${methodKey}`);
+    return { skip: true, value: fallback };
+  }
+  return { skip: false };
+}
+
+function baParams(
+  params?: Record<string, unknown> | null,
+  allowed?: string[]
+): Record<string, unknown> {
+  const cfg = baConfig();
+  if (allowed) return pickBaParams(params as any, allowed, cfg);
+  return filterBaParams(params as any, cfg);
+}
 
 // ========== HELPER FUNCTIONS ==========
 
@@ -317,9 +409,37 @@ export const optimizedApis = {
       company?: string;
       from_date?: string;
       to_date?: string;
+      territories?: string;
+      territory?: string;
     } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_complete_dashboard_data", {
+        kpis: [],
+        user_profile: {
+          image_url: "",
+          employee_name: "",
+          company: "",
+          designation: "",
+          branch: "",
+          cell_number: "",
+          company_email: "",
+          current_address: "",
+          country: "",
+        },
+        date: new Date().toLocaleDateString(),
+      } as DashboardData);
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        const u = useAuthStore.getState().user;
+        return softParseOrRaw(
+          DashboardResponseSchema,
+          getDemoDashboardData(u),
+          "dashboard:demo"
+        );
+      }
+
       // Use configured server URL from user settings
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
@@ -327,19 +447,25 @@ export const optimizedApis = {
       // Get access token for authentication
       const accessToken = await oauthApi.getValidToken();
 
-      console.log("🌐 Using server URL:", serverUrl);
-      console.log("🔑 Using access token for authentication");
-      console.log("📊 Calling Dashboard API with authentication");
+      logger.info("Using server URL:", serverUrl);
+      logger.info("Using access token for authentication");
+      logger.info("Calling Dashboard API with authentication");
 
       // Try custom API with authentication
       try {
-        console.log(
-          "🌐 Calling dashboard API with access token authentication"
+        logger.info(
+          "Calling dashboard API with access token authentication"
         );
 
         const response = await http.get<any>(
-          "/api/method/printechs_utility.dashboard.get_complete_dashboard_data",
-          params
+          "/api/method/erp_analysis.dashboard.get_complete_dashboard_data",
+          baParams(params, [
+            "company",
+            "from_date",
+            "to_date",
+            "territories",
+            "territory",
+          ])
         );
 
         const apiData = response.message || response;
@@ -377,15 +503,10 @@ export const optimizedApis = {
         if (apiData.sales_dashboard?.territory) {
           apiData.sales_dashboard.territory =
             apiData.sales_dashboard.territory.map((territory: any) => {
-              // If invoice_count is missing or 0, estimate from sales
-              // Assuming average invoice value of ~1000 SAR per invoice
-              const estimatedInvoiceCount =
-                territory.invoice_count ||
-                Math.round(territory.total_sales / 1000);
-
               return {
                 ...territory,
-                invoice_count: estimatedInvoiceCount || 0,
+                // Do not invent invoice counts — keep server value or 0
+                invoice_count: territory.invoice_count ?? 0,
               };
             });
         }
@@ -401,7 +522,11 @@ export const optimizedApis = {
           ),
         });
 
-        const parsed = DashboardResponseSchema.parse(apiData);
+        const parsed = softParseOrRaw(
+          DashboardResponseSchema,
+          apiData,
+          "dashboard"
+        );
         console.log(
           "✅ Custom Dashboard API loaded successfully with real data"
         );
@@ -566,19 +691,28 @@ export const optimizedApis = {
     } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_inventory_snapshot", null);
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoInventorySnapshot();
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
       const response = await http.get<any>(
-        "/api/method/printechs_utility.inventory.get_inventory_snapshot",
-        params,
+        "/api/method/erp_analysis.inventory.get_inventory_snapshot",
+        baParams(params, ["company", "warehouse", "low_stock_threshold"]),
         { timeout: 120000 }
       );
       return response.message || response;
-    } catch (error) {
+    } catch (error: unknown) {
       // Silently log network errors - they're handled by the UI
-      console.log("⚠️ Inventory Snapshot API Error:", error.message);
+      console.log(
+        "⚠️ Inventory Snapshot API Error:",
+        error instanceof Error ? error.message : String(error)
+      );
       throw error;
     }
   },
@@ -587,33 +721,43 @@ export const optimizedApis = {
     params: { company?: string; warehouse?: string; limit?: number } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_inventory_performance", null);
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoInventoryPerformance();
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
       const response = await http.get<any>(
-        "/api/method/printechs_utility.inventory.get_inventory_performance",
-        params
+        "/api/method/erp_analysis.inventory.get_inventory_performance",
+        baParams(params, ["company", "warehouse", "limit"])
       );
       return response.message || response;
-    } catch (error) {
+    } catch (error: unknown) {
       // Silently log network errors - they're handled by the UI
-      console.log("⚠️ Inventory Performance API Error:", error.message);
+      console.log(
+        "⚠️ Inventory Performance API Error:",
+        error instanceof Error ? error.message : String(error)
+      );
 
       // Extract error message from response
       let errorMessage = "Failed to load inventory performance data";
-      if (error.response?.status === 417) {
+      if (isAxiosError(error) && error.response?.status === 417) {
         errorMessage =
           "Inventory Performance API endpoint not found or not whitelisted. Please check backend implementation.";
-      } else if (error.response?.status === 500) {
+      } else if (isAxiosError(error) && error.response?.status === 500) {
         errorMessage =
           error.response?.data?.message ||
           error.response?.data?.exc ||
           "Server error occurred";
-      } else if (error.response?.data?.message) {
+      } else if (isAxiosError(error) && error.response?.data?.message) {
         errorMessage = error.response.data.message;
       }
-      throw error;
+      console.error(errorMessage, error);
+      throw new Error(errorMessage);
     }
   },
 
@@ -622,23 +766,33 @@ export const optimizedApis = {
       company?: string;
       warehouse?: string;
       months?: number;
-      from_date?: string;
-      to_date?: string;
     } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_inventory_trends", {
+        movementInOut: [],
+        valueTrend: [],
+      });
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoInventoryTrends();
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
       const response = await http.get<any>(
-        "/api/method/printechs_utility.inventory.get_inventory_trends",
-        params
+        "/api/method/erp_analysis.inventory.get_inventory_trends",
+        baParams(params, ["company", "warehouse", "months"])
       );
       return response.message || response;
-    } catch (error) {
+    } catch (error: unknown) {
       // Silently log network errors - they're handled by the UI
-      console.log("⚠️ Inventory Trends API Error:", error.message);
+      console.log(
+        "⚠️ Inventory Trends API Error:",
+        error instanceof Error ? error.message : String(error)
+      );
       throw error;
     }
   },
@@ -647,18 +801,30 @@ export const optimizedApis = {
     params: { company?: string; warehouse?: string } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_inventory_risk", {
+        lowStock: [],
+        overstock: [],
+      });
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoInventoryRisk();
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
       const response = await http.get<any>(
-        "/api/method/printechs_utility.inventory.get_inventory_risk",
-        params
+        "/api/method/erp_analysis.inventory.get_inventory_risk",
+        baParams(params, ["company", "warehouse"])
       );
       return response.message || response;
-    } catch (error) {
+    } catch (error: unknown) {
       // Silently log network errors - they're handled by the UI
-      console.log("⚠️ Inventory Risk API Error:", error.message);
+      console.log(
+        "⚠️ Inventory Risk API Error:",
+        error instanceof Error ? error.message : String(error)
+      );
       throw error;
     }
   },
@@ -670,11 +836,21 @@ export const optimizedApis = {
   async getInventoryHierarchy(params: {
     company?: string;
     warehouse?: string;
-    level: "category" | "item_group" | "brand" | "item" | "warehouse";
+    /** Territory path root + Category path shared levels */
+    level:
+      | "territory"
+      | "warehouse"
+      | "category"
+      | "item_group"
+      | "brand"
+      | "item";
+    territory?: string;
+    territories?: string;
     category?: string;
     item_group?: string;
     brand?: string;
     item_code?: string;
+    limit?: number;
   }) {
     try {
       // Validate required parameters
@@ -682,39 +858,59 @@ export const optimizedApis = {
         throw new Error("Level parameter is required");
       }
 
+      const disabled = getDisabledFallback("get_inventory_hierarchy", []);
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoInventoryHierarchy();
+      }
+
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
 
-      // Filter out empty, null, or undefined values to prevent backend validation errors
-      const cleanParams: any = {
-        level: params.level,
-      };
+      const auth = useAuthStore.getState();
+      const company =
+        params.company ||
+        auth.permissions?.scope?.company ||
+        auth.user?.company ||
+        undefined;
 
-      // Only include non-empty values
-      if (params.company && params.company.trim()) {
-        cleanParams.company = params.company;
-      }
-      if (params.warehouse && params.warehouse.trim()) {
-        cleanParams.warehouse = params.warehouse;
-      }
-      if (params.category && params.category.trim()) {
-        cleanParams.category = params.category;
-      }
-      if (params.item_group && params.item_group.trim()) {
-        cleanParams.item_group = params.item_group;
-      }
-      if (params.brand && params.brand.trim()) {
-        cleanParams.brand = params.brand;
-      }
-      if (params.item_code && params.item_code.trim()) {
-        cleanParams.item_code = params.item_code;
-      }
+      // Match BA contract:
+      // GET ?level=territory&company=...
+      // GET ?level=warehouse&territory=Jeddah&company=...
+      // GET ?level=brand&territory=Jeddah&warehouse=Jeddah%20Main%20-%20WHS%20-%20PRNTX&company=...
+      const cleanParams = baParams(
+        {
+          level: params.level,
+          company,
+          warehouse: params.warehouse,
+          territory: params.territory,
+          territories: params.territories,
+          category: params.category,
+          item_group: params.item_group,
+          brand: params.brand,
+          item_code: params.item_code,
+          limit: params.limit,
+        },
+        [
+          "level",
+          "company",
+          "warehouse",
+          "territory",
+          "territories",
+          "category",
+          "item_group",
+          "brand",
+          "item_code",
+          "limit",
+        ]
+      );
 
       // Log request details for debugging
       console.log("🔍 Inventory Hierarchy API Request:", {
-        url: "/api/method/printechs_utility.inventory.get_inventory_hierarchy",
+        url: "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
         originalParams: params,
         cleanParams: cleanParams,
         level: cleanParams.level,
@@ -722,30 +918,46 @@ export const optimizedApis = {
       });
 
       const response = await http.get<any>(
-        "/api/method/printechs_utility.inventory.get_inventory_hierarchy",
+        "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
         cleanParams
       );
 
+      const payload = response?.message ?? response;
+      const rows = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.rows)
+          ? payload.rows
+          : Array.isArray(payload?.message)
+            ? payload.message
+            : null;
+
       console.log("✅ Inventory Hierarchy API Response:", {
         level: params.level,
-        dataLength: Array.isArray(response.message || response)
-          ? (response.message || response).length
-          : "not array",
-        sample: Array.isArray(response.message || response)
-          ? (response.message || response).slice(0, 2)
-          : response.message || response,
+        envelope: payload && !Array.isArray(payload) ? Object.keys(payload) : "array",
+        dataLength: Array.isArray(rows) ? rows.length : "not array",
+        sample: Array.isArray(rows) ? rows.slice(0, 2) : payload,
       });
 
-      return response.message || response;
+      // Prefer full envelope { level, rows, meta }; UI normalizes either shape
+      return payload;
     } catch (error: any) {
       // Silently log network errors - they're handled by the UI
       console.log("⚠️ Inventory Hierarchy API Error:", error.message);
 
+      const serverMsg =
+        error.response?.data?._server_messages ||
+        error.response?.data?.message ||
+        error.response?.data?.exc_type;
+
       // Extract error message from response
       let errorMessage = "Failed to load inventory hierarchy data";
       if (error.response?.status === 417) {
+        console.log("⚠️ Hierarchy 417 detail:", serverMsg);
         errorMessage =
-          "API endpoint not found. Please: 1) Add get_inventory_hierarchy function to inventory.py, 2) Restart ERPNext server, 3) Reload this app.";
+          typeof error.response?.data?.message === "string" &&
+          error.response.data.message.trim()
+            ? error.response.data.message
+            : "get_inventory_hierarchy returned 417 (method missing or unexpected kwargs). Confirm BA deployed + restart; params: level, company, territory, warehouse, brand, item_group.";
       } else if (error.response?.status === 500) {
         errorMessage =
           error.response?.data?.message ||
@@ -802,7 +1014,7 @@ export const optimizedApis = {
       } as any;
 
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_receivables_dashboard",
+        "/api/method/erp_analysis.receivables.get_receivables_dashboard",
         query
       );
 
@@ -893,11 +1105,15 @@ export const optimizedApis = {
         );
 
         const response = await http.post<any>(
-          "/api/method/printechs_utility.employee.get_complete_employees_data",
+          "/api/method/erp_analysis.employee.get_complete_employees_data",
           params
         );
         const apiData = response.message || response;
-        const parsed = EmployeesResponseSchema.parse(apiData);
+        const parsed = softParseOrRaw(
+          EmployeesResponseSchema,
+          apiData,
+          "employees"
+        );
         console.log(
           "✅ Custom Employees API loaded successfully with real data"
         );
@@ -984,23 +1200,38 @@ export const optimizedApis = {
     try {
       console.log("✅ Calling Approvals API...");
 
-      // Use production server with user's authentication
-      const baseUrl = useAuthStore.getState().serverConfig.serverUrl;
-      const apiUrl = `${baseUrl}/api/method/printechs_utility.approvals.get_all_approvals`;
+      // Relative path — http client owns the base URL (avoids host+host doubling)
+      const apiUrl = ERP_ANALYSIS.approvals.getAllApprovals;
 
       try {
         console.log("🌐 Calling approvals API with production URL");
 
-        // Use http.post for authenticated requests
-        const payload = { ...params };
-        if (!payload.territories) {
-          const allowedTerritories =
-            useAuthStore.getState().permissions.scope?.territories;
-          if (
-            Array.isArray(allowedTerritories) &&
-            allowedTerritories.length > 0
-          ) {
-            payload.territories = allowedTerritories.join(",");
+        // Approvals use approve_territories only (e.g. Dammam), never full view list
+        let payload = baParams(params as any, [
+          "status",
+          "priority",
+          "limit",
+          "offset",
+          "territory",
+          "territories",
+        ]);
+        if (
+          !payload.territories &&
+          !payload.territory &&
+          isDimensionEnabled(baConfig(), "territory")
+        ) {
+          const scope = useAuthStore.getState().permissions.scope;
+          const approveList =
+            scope?.approve_territories?.length
+              ? scope.approve_territories
+              : scope?.branch
+                ? [scope.branch]
+                : [];
+          if (approveList.length > 0) {
+            payload = {
+              ...payload,
+              territories: approveList.join(","),
+            };
           }
         }
 
@@ -1008,14 +1239,18 @@ export const optimizedApis = {
         const permissions = useAuthStore.getState().permissions.scope;
         console.log("📤 Approvals API Request:", {
           apiUrl,
+          baseUrl: http.getBaseUrl(),
           payload,
           territories: payload.territories,
+          approveTerritories: permissions?.approve_territories,
+          viewTerritories: permissions?.view_territories,
           permissions: permissions,
         });
         console.log("🔍 User Details for Debugging:", {
           user: useAuthStore.getState().user?.email,
           company: permissions?.company,
-          territories: permissions?.territories,
+          viewTerritories: permissions?.view_territories,
+          approveTerritories: permissions?.approve_territories,
           branch: permissions?.branch,
           territory: permissions?.territory,
         });
@@ -1084,11 +1319,15 @@ export const optimizedApis = {
         // Try to parse the response, but log detailed error if validation fails
         let parsed;
         try {
-          parsed = ApprovalsResponseSchema.parse(apiData);
+          parsed = softParseOrRaw(
+            ApprovalsResponseSchema,
+            apiData,
+            "approvals"
+          );
           console.log("✅ Schema validation passed!");
           console.log("✅ Approved items:", parsed.approvals?.length || 0);
           console.log(
-            "✅ Demo Approvals API loaded successfully with territory-filtered data"
+            "✅ Approvals API loaded successfully with territory-filtered data"
           );
         } catch (validationError: any) {
           console.error("❌ Schema validation error!");
@@ -1240,11 +1479,14 @@ export const optimizedApis = {
    */
   async approveDocument(doctype: string, name: string, comment?: string) {
     try {
+      if (shouldUseMockData()) {
+        console.log("✅ Demo: simulate approve", { doctype, name });
+        return { success: true, message: "Demo mode: approval simulated." };
+      }
+
       console.log("✅ Approving document:", { doctype, name, comment });
 
-      // Use production server with user's authentication
-      const baseUrl = useAuthStore.getState().serverConfig.serverUrl;
-      const approveUrl = `${baseUrl}/api/method/printechs_utility.approvals.approve_document`;
+      const approveUrl = ERP_ANALYSIS.approvals.approveDocument;
 
       try {
         const response = await http.post<any>(approveUrl, {
@@ -1340,7 +1582,9 @@ export const optimizedApis = {
               errorMessage = "Document was modified by another user. The backend should retry automatically. Please try again.";
             } else {
               // Try to extract last line of traceback (usually the error message)
-              const lines = excStr.split("\n").filter(line => line.trim());
+              const lines = excStr
+                .split("\n")
+                .filter((line: string) => line.trim());
               const lastLine = lines[lines.length - 1];
               if (lastLine && !lastLine.includes("Traceback") && !lastLine.includes("File")) {
                 errorMessage = lastLine.replace(/^.*?: /, "").trim();
@@ -1408,11 +1652,14 @@ export const optimizedApis = {
    */
   async rejectDocument(doctype: string, name: string, reason?: string) {
     try {
+      if (shouldUseMockData()) {
+        console.log("✅ Demo: simulate reject", { doctype, name });
+        return { success: true, message: "Demo mode: rejection simulated." };
+      }
+
       console.log("❌ Rejecting document:", { doctype, name, reason });
 
-      // Use production server with user's authentication
-      const baseUrl = useAuthStore.getState().serverConfig.serverUrl;
-      const rejectUrl = `${baseUrl}/api/method/printechs_utility.approvals.reject_document`;
+      const rejectUrl = ERP_ANALYSIS.approvals.rejectDocument;
 
       try {
         const response = await http.post<any>(rejectUrl, {
@@ -1486,34 +1733,60 @@ export const optimizedApis = {
         throw new Error("No user is currently logged in");
       }
 
+      const fallbackProfile = {
+        image_url: "",
+        employee_name:
+          currentUser.full_name || currentUser.username || "User",
+        company: currentUser.company || "",
+        designation: currentUser.designation || "",
+        branch: (currentUser as any).branch || "",
+        territory: (currentUser as any).branch || "",
+        cell_number:
+          (currentUser as any).mobile_no ||
+          (currentUser as any).phone ||
+          "",
+        company_email: currentUser.email || "",
+        current_address: (currentUser as any).current_address || "",
+        country: (currentUser as any).country || "",
+      };
+
       // Direct call to the new backend endpoint
       console.log("🌐 Calling new get_employee_profile endpoint");
-      const response = await http.get<any>(
-        "/api/method/printechs_utility.employee.get_employee_profile",
-        { email: currentUser.email }
-      );
-      const apiData = response.message || response;
+      let apiData: any;
+      try {
+        const response = await http.get<any>(
+          "/api/method/erp_analysis.employee.get_employee_profile",
+          baParams({ email: currentUser.email }, ["email"])
+        );
+        apiData = response.message || response;
+      } catch (profileError) {
+        // Network / missing method — keep session usable with login identity
+        console.warn(
+          "⚠️ get_employee_profile unavailable, using login profile:",
+          profileError
+        );
+        const payload = {
+          user_profile: fallbackProfile,
+          qr_data: generateQRDataFromEmployee(fallbackProfile as any),
+        };
+        return softParseOrRaw(
+          UserProfileResponseSchema,
+          payload,
+          "user_profile"
+        ) as UserProfileData;
+      }
 
       // Defensive: ensure the profile belongs to the current login
-      const returnedEmail = (apiData?.user_profile?.company_email || "").trim().toLowerCase();
+      const returnedEmail = (apiData?.user_profile?.company_email || "")
+        .trim()
+        .toLowerCase();
       const loginEmail = (currentUser.email || "").trim().toLowerCase();
-      const belongsToLogin = !!loginEmail && (returnedEmail === loginEmail);
+      const belongsToLogin = !!loginEmail && returnedEmail === loginEmail;
 
       // If mismatch, return minimal profile for the logged-in user (forces logo + username)
       const safeProfile = belongsToLogin
         ? apiData.user_profile
-        : {
-            image_url: "",
-            employee_name: currentUser.full_name || currentUser.username || "User",
-            company: currentUser.company || "",
-            designation: currentUser.designation || "",
-            branch: (currentUser as any).branch || "",
-            territory: (currentUser as any).branch || "",
-            cell_number: (currentUser as any).mobile_no || (currentUser as any).phone || "",
-            company_email: currentUser.email || "",
-            current_address: (currentUser as any).current_address || "",
-            country: (currentUser as any).country || "",
-          };
+        : fallbackProfile;
 
       // Build a compliant payload by adding qr_data (backend doesn't return it)
       const payload = {
@@ -1521,7 +1794,11 @@ export const optimizedApis = {
         qr_data: generateQRDataFromEmployee(safeProfile as any),
       };
 
-      const parsed = UserProfileResponseSchema.parse(payload);
+      const parsed = softParseOrRaw(
+        UserProfileResponseSchema,
+        payload,
+        "user_profile"
+      );
       return parsed as UserProfileData;
     } catch (error) {
       console.error("❌ User Profile API Error:", error);
@@ -1535,15 +1812,15 @@ export const optimizedApis = {
    */
   async sendStatementByEmail(customer_name: string) {
     try {
+      if (shouldUseMockData()) {
+        return { success: true, message: "Demo mode: email not sent." };
+      }
       console.log(
         "📧 Sending Statement of Account via email for:",
         customer_name
       );
 
-      // Use production server with user's authentication
-      const baseUrl = useAuthStore.getState().serverConfig.serverUrl;
-
-      const emailUrl = `${baseUrl}/api/method/printechs_utility.customer_notifications.send_statement_pdf`;
+      const emailUrl = ERP_ANALYSIS.customerNotifications.sendStatementPdf;
 
       try {
         const response = await http.post<any>(emailUrl, {
@@ -1626,6 +1903,24 @@ export const optimizedApis = {
     params: { company?: string; territory?: string } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_receivables_snapshot", {
+        totalUnpaid: 0,
+        totalOverdue: 0,
+        overdueLt400: 0,
+        oldBalance: 0,
+        overdue_0_30: 0,
+        overdue_31_60: 0,
+        overdue_61_90: 0,
+        overdue_over_90: 0,
+        overduePercentage: 0,
+        dso: 0,
+        averageCollectionPeriod: 0,
+      });
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoReceivablesSnapshot();
+      }
       console.log("🔐 Calling Receivables Snapshot API...");
 
       // Use configured server URL from user settings
@@ -1639,14 +1934,14 @@ export const optimizedApis = {
         throw new Error("No valid access token available");
       }
 
-      console.log(
-        "✅ Valid access token obtained for Receivables Snapshot API"
+      logger.info(
+        "Valid access token obtained for Receivables Snapshot API"
       );
 
       // Use GET with query params (no body) per server preference
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_receivables_snapshot",
-        params
+        "/api/method/erp_analysis.receivables.get_receivables_snapshot",
+        baParams(params, ["company", "territory"])
       );
 
       const apiData = response.message || response;
@@ -1656,7 +1951,11 @@ export const optimizedApis = {
         oldBalance: 0,
         ...apiData,
       };
-      const parsed = ReceivablesSnapshotResponseSchema.parse(normalized);
+      const parsed = softParseOrRaw(
+        ReceivablesSnapshotResponseSchema,
+        normalized,
+        "receivables_snapshot"
+      );
       console.log("✅ Receivables Snapshot API loaded successfully");
       return parsed;
     } catch (error) {
@@ -1673,6 +1972,17 @@ export const optimizedApis = {
     params: { company?: string; territory?: string; limit?: number } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_receivables_performance", {
+        topOverdueCustomers: [],
+        topOverdueInvoices: [],
+        agingBreakdown: [],
+        collectionEfficiency: 0,
+      });
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoReceivablesPerformance();
+      }
       console.log("🔐 Calling Receivables Performance API...");
 
       // Use configured server URL from user settings
@@ -1686,18 +1996,22 @@ export const optimizedApis = {
         throw new Error("No valid access token available");
       }
 
-      console.log(
-        "✅ Valid access token obtained for Receivables Performance API"
+      logger.info(
+        "Valid access token obtained for Receivables Performance API"
       );
 
       // Use GET with query params (no body) per server preference
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_receivables_performance",
-        params
+        "/api/method/erp_analysis.receivables.get_receivables_performance",
+        baParams(params, ["company", "territory", "limit"])
       );
 
       const apiData = response.message || response;
-      const parsed = ReceivablesPerformanceResponseSchema.parse(apiData);
+      const parsed = softParseOrRaw(
+        ReceivablesPerformanceResponseSchema,
+        apiData,
+        "receivables_performance"
+      );
       console.log("✅ Receivables Performance API loaded successfully");
       return parsed;
     } catch (error) {
@@ -1714,6 +2028,18 @@ export const optimizedApis = {
     params: { company?: string; territory?: string; months?: number } = {}
   ) {
     try {
+      const disabled = getDisabledFallback("get_receivables_trends", {
+        arTrend: [],
+        receivableByTerritory: [],
+        overdueByTerritory: [],
+        monthlyOverdueTrend: [],
+        monthlySalesVsCollection: [],
+      });
+      if (disabled.skip) return disabled.value;
+
+      if (shouldUseMockData()) {
+        return getDemoReceivablesTrend();
+      }
       console.log("🔐 Calling Receivables Trend API...");
 
       // Use configured server URL from user settings
@@ -1727,16 +2053,20 @@ export const optimizedApis = {
         throw new Error("No valid access token available");
       }
 
-      console.log("✅ Valid access token obtained for Receivables Trend API");
+      logger.info("Valid access token obtained for Receivables Trend API");
 
       // Use GET with query params (no body) per server preference
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_receivables_trends",
-        params
+        "/api/method/erp_analysis.receivables.get_receivables_trends",
+        baParams(params, ["company", "territory", "months"])
       );
 
       const apiData = response.message || response;
-      const parsed = ReceivablesTrendResponseSchema.parse(apiData);
+      const parsed = softParseOrRaw(
+        ReceivablesTrendResponseSchema,
+        apiData,
+        "receivables_trend"
+      );
       console.log("✅ Receivables Trend API loaded successfully");
       return parsed;
     } catch (error) {
@@ -1753,14 +2083,26 @@ export const optimizedApis = {
     sort?: string;
   }) {
     try {
+      const disabled = getDisabledFallback("get_territory_receivables", {
+        customers: [],
+        total: 0,
+      });
+      if (disabled.skip) return disabled.value;
+
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
 
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_territory_receivables",
-        params
+        "/api/method/erp_analysis.receivables.get_territory_receivables",
+        baParams(params as any, [
+          "company",
+          "territory",
+          "limit",
+          "offset",
+          "sort",
+        ])
       );
       return response.message || response;
     } catch (error) {
@@ -1776,14 +2118,22 @@ export const optimizedApis = {
     to_date?: string;
   }) {
     try {
+      const disabled = getDisabledFallback("get_customer_statement", null);
+      if (disabled.skip) return disabled.value;
+
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
 
       const response = await http.get<any>(
-        "/api/method/printechs_utility.receivables.get_customer_statement",
-        params
+        "/api/method/erp_analysis.receivables.get_customer_statement",
+        baParams(params as any, [
+          "company",
+          "customer",
+          "from_date",
+          "to_date",
+        ])
       );
       return response.message || response;
     } catch (error) {
@@ -1797,23 +2147,26 @@ export const optimizedApis = {
    */
   async getCataloguesList() {
     try {
+      if (shouldUseMockData()) {
+        return getDemoCataloguesList();
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
       const accessToken = await oauthApi.getValidToken();
       if (!accessToken) throw new Error("No valid access token available");
 
-      const apiUrl = "/api/method/printechs_utility.catalogue.get_catalogues_list";
-      console.log("🔍 Fetching catalogues list from:", serverUrl);
-      console.log("🔍 API Endpoint:", apiUrl);
-      console.log("🔍 Access Token:", accessToken ? "Present" : "Missing");
+      const apiUrl = "/api/method/erp_analysis.catalogue.get_catalogues_list";
+      logger.info("Fetching catalogues list from:", serverUrl);
+      logger.info("API Endpoint:", apiUrl);
+      logger.info("Access token:", accessToken ? "Present" : "Missing");
       
       const response = await http.get<any>(apiUrl);
       
-      console.log("🔍 Raw catalogues API response TYPE:", typeof response);
-      console.log("🔍 Raw catalogues API response:", JSON.stringify(response, null, 2));
-      console.log("🔍 Response has 'message'?", !!response?.message);
-      console.log("🔍 Response has 'catalogues'?", !!response?.catalogues);
-      console.log("🔍 Response keys:", Object.keys(response || {}));
+      logger.info("Raw catalogues API response TYPE:", typeof response);
+      logger.info("Raw catalogues API response:", response);
+      logger.info("Response has 'message'?", !!response?.message);
+      logger.info("Response has 'catalogues'?", !!response?.catalogues);
+      logger.info("Response keys:", Object.keys(response || {}));
       
       // Handle various response structures:
       // 1. { message: { catalogues: [...], total: N } }
@@ -1884,7 +2237,7 @@ export const optimizedApis = {
       if (!accessToken) throw new Error("No valid access token available");
 
       const response = await http.get<any>(
-        "/api/method/printechs_utility.catalogue.get_catalogue_pages",
+        "/api/method/erp_analysis.catalogue.get_catalogue_pages",
         { catalogue_id: catalogueId }
       );
       
@@ -1911,6 +2264,10 @@ export const optimizedApis = {
     company?: string | null;
   }) {
     try {
+      if (isDemoMode()) {
+        logger.info("Demo mode: skip registering push token with server");
+        return;
+      }
       const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
       http.setBaseUrl(serverUrl);
 
@@ -1922,23 +2279,23 @@ export const optimizedApis = {
       };
 
       await http.post(
-        "/api/method/printechs_utility.api.store_push_token",
+        "/api/method/erp_analysis.api.store_push_token",
         payload
       );
-      console.log("✅ Push token stored with backend");
+      logger.info("Push token stored with backend");
     } catch (error) {
       if (isAxiosError(error) && error.response?.status === 417) {
         if (!pushTokenStore417Logged) {
           pushTokenStore417Logged = true;
-          console.log(
-            "ℹ️ Push token not accepted (HTTP 417). On the Frappe site, allow POST for " +
-              "`printechs_utility.api.store_push_token` (whitelisted server method), " +
-              "or align the app with the method name your `printechs_utility` app exposes."
+          logger.info(
+            "Push token not accepted (HTTP 417). On the Frappe site, allow POST for " +
+              "`erp_analysis.api.store_push_token` (whitelisted server method), " +
+              "or align the app with the method name your `erp_analysis` app exposes."
           );
         }
         return;
       }
-      console.error("❌ Store Push Token Error:", error);
+      logger.error("Store Push Token Error:", error);
       throw error;
     }
   },

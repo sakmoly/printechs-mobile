@@ -16,34 +16,61 @@ import { PerformanceTab } from "../src/components/dashboard-tabs/PerformanceTab"
 import { TrendsTab } from "../src/components/dashboard-tabs/TrendsTab";
 import { useSalesDashboard } from "../src/hooks/useSalesDashboard";
 import { LoadingScreen } from "../src/components/LoadingScreen";
+import { useAuthStore } from "../src/store/auth";
+import { isModuleEnabled } from "../src/api/mobileConfig";
+import { resolveCompanyName } from "../src/api/apiResilience";
+import { SafeScreen } from "../src/components/SafeScreen";
+import { Fonts, Type } from "../src/theme/typography";
 
 const { width } = Dimensions.get("window");
 
 type TabType = "overview" | "performance" | "trends";
 
+function toLocalIso(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export default function SalesDashboardScreen() {
   const [activeTab, setActiveTab] = useState<TabType>("overview");
   const [refreshing, setRefreshing] = useState(false);
+  const mobileConfig = useAuthStore((s) => s.mobileConfig);
+  const user = useAuthStore((s) => s.user);
+  const permissions = useAuthStore((s) => s.permissions);
+  const company = resolveCompanyName(
+    permissions.scope?.company,
+    user?.company
+  );
+  const showSalesperson = isModuleEnabled(mobileConfig, "salesperson");
+  const showProduct = isModuleEnabled(mobileConfig, "product_performance");
 
-  // Calculate YTD date ranges
+  // Calculate YTD date ranges (local calendar — avoid UTC day shift)
   const getYTDRanges = () => {
     const now = new Date();
     const currentYear = now.getFullYear();
     const lastYear = currentYear - 1;
 
-    // Current YTD: Jan 1 to today
     const currentYTDStart = `${currentYear}-01-01`;
-    const currentYTDEnd = now.toISOString().split("T")[0];
+    const currentYTDEnd = toLocalIso(now);
 
-    // Last Year YTD: Jan 1 to same date last year
     const lastYearYTDStart = `${lastYear}-01-01`;
-    const lastYearYTDEnd = new Date(lastYear, now.getMonth(), now.getDate())
-      .toISOString()
-      .split("T")[0];
+    const lastYearYTDEnd = toLocalIso(
+      new Date(lastYear, now.getMonth(), now.getDate())
+    );
 
     return {
-      currentYTD: { from_date: currentYTDStart, to_date: currentYTDEnd },
-      lastYearYTD: { from_date: lastYearYTDStart, to_date: lastYearYTDEnd },
+      currentYTD: {
+        company,
+        from_date: currentYTDStart,
+        to_date: currentYTDEnd,
+      },
+      lastYearYTD: {
+        company,
+        from_date: lastYearYTDStart,
+        to_date: lastYearYTDEnd,
+      },
     };
   };
 
@@ -130,116 +157,27 @@ export default function SalesDashboardScreen() {
     );
   }
 
-  // Create fallback data when sales_dashboard is not available yet
-  const fallbackSalesData = {
-    metrics: {
-      totalSales: 2018190.53,
-      totalInvoices: 150,
-      avgInvoiceValue: 13454.6,
-      costOfGoodsSold: 1500000.0,
-      grossProfit: 518190.53,
-      grossProfitPercentage: 25.7,
-    },
-    top_brands: [
-      {
-        brand: "Hitachi",
-        total_sales: 500000,
-        total_quantity: 1200,
-        total_cost: 350000,
-        gross_profit_amount: 150000,
-        gross_profit_percent: 30.0,
-        invoice_count: 45,
-      },
-      {
-        brand: "Nedap",
-        total_sales: 300000,
-        total_quantity: 800,
-        total_cost: 200000,
-        gross_profit_amount: 100000,
-        gross_profit_percent: 33.3,
-        invoice_count: 25,
-      },
-      {
-        brand: "Zebra",
-        total_sales: 250000,
-        total_quantity: 600,
-        total_cost: 180000,
-        gross_profit_amount: 70000,
-        gross_profit_percent: 28.0,
-        invoice_count: 30,
-      },
-    ],
-    top_customers: [
-      {
-        customer: "CUST001",
-        customer_name: "Customer A",
-        total_sales: 200000,
-        invoice_count: 12,
-      },
-      {
-        customer: "CUST002",
-        customer_name: "Customer B",
-        total_sales: 150000,
-        invoice_count: 8,
-      },
-      {
-        customer: "CUST003",
-        customer_name: "Customer C",
-        total_sales: 100000,
-        invoice_count: 5,
-      },
-    ],
-    monthly_trend: {
-      labels: [
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-      ],
-      current: [
-        100000, 150000, 200000, 180000, 220000, 250000, 230000, 280000, 300000,
-        201819, 0, 0,
-      ],
-      previous: [
-        90000, 140000, 180000, 160000, 200000, 230000, 210000, 260000, 280000,
-        190000, 180000, 200000,
-      ],
-    },
-    territory: [
-      { territory: "Riyadh", total_sales: 800000, invoice_count: 50 },
-      { territory: "Jeddah", total_sales: 600000, invoice_count: 40 },
-      { territory: "Dammam", total_sales: 400000, invoice_count: 30 },
-    ],
-    division: [
-      { division: "Industrial", total_sales: 1200000, margin_percentage: 28.5 },
-      { division: "Retail", total_sales: 800000, margin_percentage: 22.0 },
-      { division: "Software", total_sales: 200000, margin_percentage: 45.0 },
-    ],
-  };
+  // Live data only — never invent sample sales figures
+  if (!salesData) {
+    return (
+      <View style={styles.errorContainer}>
+        <Ionicons name="stats-chart-outline" size={64} color="#94a3b8" />
+        <Text style={styles.errorTitle}>No Sales Data</Text>
+        <Text style={styles.errorMessage}>
+          Sales dashboard data is not available from the server yet.
+        </Text>
+        <TouchableOpacity
+          style={styles.retryButton}
+          onPress={() => Promise.all([refetchCurrent(), refetchLastYear()])}
+        >
+          <Ionicons name="refresh-outline" size={20} color="#ffffff" />
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
-  // Use fallback data if sales_dashboard is not available
-  const displayData = salesData || fallbackSalesData;
-  const isUsingFallback = !salesData;
-
-  // Debug: Log what data we're using for display
-  console.log("🔍 Display Data Debug:", {
-    hasSalesData: !!salesData,
-    isUsingFallback,
-    hasMetrics: !!displayData?.metrics,
-    hasTopBrands: !!displayData?.top_brands?.length,
-    hasTopCustomers: !!displayData?.top_customers?.length,
-    hasMonthlyTrend: !!displayData?.monthly_trend?.labels?.length,
-    hasTerritory: !!displayData?.territory?.length,
-    hasDivision: !!displayData?.division?.length,
-  });
+  const displayData = salesData;
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -456,7 +394,7 @@ export default function SalesDashboardScreen() {
 
         return (
           <TrendsTab
-            monthlyTrend={monthlyTrendData}
+            monthlyTrend={monthlyTrendData ?? undefined}
             territoryData={salesData?.territory}
             divisionData={salesData?.division}
             lastYearTerritoryData={lastYearData?.territory}
@@ -469,7 +407,7 @@ export default function SalesDashboardScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <LinearGradient
         colors={["#667eea", "#764ba2"]}
@@ -487,13 +425,36 @@ export default function SalesDashboardScreen() {
           <View style={styles.headerTitleContainer}>
             <Text style={styles.headerTitle}>Sales Dashboard</Text>
             <Text style={styles.headerSubtitle}>
-              Year-to-Date vs Last Year {isUsingFallback && "(Demo Data)"}
+              Year-to-Date vs Last Year
             </Text>
           </View>
           <TouchableOpacity style={styles.refreshButton} onPress={onRefresh}>
             <Ionicons name="refresh-outline" size={24} color="#ffffff" />
           </TouchableOpacity>
         </View>
+
+        {(showSalesperson || showProduct) && (
+          <View style={styles.phaseLinks}>
+            {showSalesperson && (
+              <TouchableOpacity
+                style={styles.phaseChip}
+                onPress={() => router.push("/salesperson-performance")}
+              >
+                <Ionicons name="people-outline" size={16} color="#667eea" />
+                <Text style={styles.phaseChipText}>Salespersons</Text>
+              </TouchableOpacity>
+            )}
+            {showProduct && (
+              <TouchableOpacity
+                style={styles.phaseChip}
+                onPress={() => router.push("/product-performance")}
+              >
+                <Ionicons name="cube-outline" size={16} color="#667eea" />
+                <Text style={styles.phaseChipText}>Products</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {/* Tab Selector */}
         <View style={styles.tabContainer}>
@@ -572,7 +533,7 @@ export default function SalesDashboardScreen() {
       >
         {renderTabContent()}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 
@@ -612,14 +573,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: "800",
+    ...Type.screenTitle,
     color: "#ffffff",
-    letterSpacing: 0.5,
   },
   headerSubtitle: {
-    fontSize: 13,
-    fontWeight: "600",
+    ...Type.caption,
     color: "rgba(255, 255, 255, 0.85)",
     marginTop: 2,
   },
@@ -630,6 +588,26 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.2)",
     justifyContent: "center",
     alignItems: "center",
+  },
+  phaseLinks: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  phaseChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  phaseChipText: {
+    color: "#667eea",
+    fontWeight: "700",
+    fontSize: 13,
   },
   tabContainer: {
     flexDirection: "row",

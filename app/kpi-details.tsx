@@ -11,6 +11,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useKpis } from "../src/hooks/useKpis";
+import { SafeScreen } from "../src/components/SafeScreen";
 
 const { width } = Dimensions.get("window");
 
@@ -37,12 +38,12 @@ export default function KpiDetailsScreen() {
   }
 
   const isPositive = kpi.change_direction === "up";
-  const gradientColors = isPositive
+  const gradientColors: [string, string] = isPositive
     ? ["#10b981", "#059669"]
     : ["#ef4444", "#dc2626"];
 
   return (
-    <View style={styles.container}>
+    <SafeScreen style={styles.container}>
       {/* Header */}
       <LinearGradient
         colors={["#667eea", "#764ba2"]}
@@ -197,7 +198,7 @@ export default function KpiDetailsScreen() {
           </Text>
         </View>
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

@@ -11,6 +11,50 @@ import {
   type AccessPermissionScope,
   type AccessObjectPermission,
 } from "../api/permissions";
+import { isDemoMode } from "../api/demoMode";
+import { shouldUseMockData } from "../api/mock";
+import {
+  DEFAULT_MOBILE_CONFIG,
+  fetchMobileConfig,
+  type MobileConfig,
+} from "../api/mobileConfig";
+import { logger } from "../utils/logger";
+import { useBootstrapStore } from "./bootstrap";
+import { normalizeAccessScope, asTruthyFlag } from "../api/accessScope";
+import { normalizeServerUrl } from "../api/serverUrl";
+
+function applyNormalizedServerUrl(config: ServerConfig): ServerConfig {
+  if (!config?.serverUrl) return config;
+  const normalized = normalizeServerUrl(config.serverUrl);
+  if (!normalized.remapped && normalized.url === config.serverUrl) {
+    return config;
+  }
+  if (normalized.remapped) {
+    console.warn("⚠️ Stored server URL healed:", normalized.note);
+  }
+  let hostname = config.hostname;
+  let port = config.port;
+  let isHttps = config.isHttps;
+  try {
+    const u = new URL(normalized.url);
+    hostname = u.hostname;
+    port = u.port
+      ? Number(u.port)
+      : u.protocol === "https:"
+        ? 443
+        : 80;
+    isHttps = u.protocol === "https:";
+  } catch {
+    /* keep existing host fields */
+  }
+  return {
+    ...config,
+    serverUrl: normalized.url,
+    hostname,
+    port,
+    isHttps,
+  };
+}
 
 export interface ServerConfig {
   serverUrl: string;
@@ -27,6 +71,7 @@ interface AuthState {
   error: string | null;
   serverConfig: ServerConfig;
   permissions: MenuPermissionState;
+  mobileConfig: MobileConfig;
 
   // Actions
   login: (credentials: LoginCredentials) => Promise<boolean>;
@@ -37,6 +82,7 @@ interface AuthState {
   loadServerConfig: () => Promise<void>;
   saveServerConfig: (config: ServerConfig) => Promise<void>;
   loadPermissions: (overrideScope?: Partial<AccessPermissionScope>) => Promise<void>;
+  loadMobileConfig: () => Promise<void>;
   resetPermissions: () => void;
 }
 
@@ -47,17 +93,26 @@ interface MenuPermissionState {
   scope?: AccessPermissionScope;
 }
 
+export type { MenuPermissionState };
+
 /**
- * Menu visibility: only explicit `can_view: false` hides UI.
- * Missing keys (backend uses different object_key codes, or empty map) default to allowed
- * so the dashboard is usable until permissions align with the app.
+ * Menu visibility from Access Profile (`get_my_access`).
+ *
+ * - Before fetch: allow (avoid blank UI on cold start)
+ * - After fetch: explicit `can_view: false` hides
+ * - Missing key: allow (BA may not list every AO code) — BA should return
+ *   denied Menu rows with `can_view: false` for hide-to-work
  */
 export function canAccessMenuObject(
   permissions: MenuPermissionState,
   objectKey: string
 ): boolean {
   if (!permissions.fetched) return true;
-  return permissions.menus[objectKey] !== false;
+  if (!objectKey) return true;
+  if (Object.prototype.hasOwnProperty.call(permissions.menus, objectKey)) {
+    return permissions.menus[objectKey] === true;
+  }
+  return true;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -78,6 +133,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     raw: [],
     scope: undefined,
   },
+  mobileConfig: DEFAULT_MOBILE_CONFIG,
 
   login: async (credentials) => {
     console.log("🏪 AUTH STORE - Login called with:", credentials);
@@ -149,8 +205,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn("⚠️ Failed to persist user profile:", error);
     }
 
-    set({ isAuthenticated: true, user: enrichedUser, isLoading: false });
+    set({ isAuthenticated: true, user: enrichedUser, isLoading: true });
+    await get().loadMobileConfig();
     await get().loadPermissions();
+    set({ isLoading: false });
 
     console.log("✅ AUTH STORE - Login completed successfully");
     return true;
@@ -163,21 +221,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       http.setBaseUrl(currentConfig.serverUrl);
     }
 
-    const username =
-      get().user?.username ||
-      get().user?.email ||
-      (typeof get().user?.user === "string" ? get().user?.user : undefined);
-    if (username) {
-      try {
-        await clearMyAccessCache(username);
-      } catch (error) {
-        // Ignore silently
-      }
-    } else {
-      try {
-        await clearMyAccessCache();
-      } catch (error) {
-        // Ignore silently
+    if (!isDemoMode()) {
+      const username =
+        get().user?.username ||
+        get().user?.email ||
+        (typeof get().user?.user === "string" ? get().user?.user : undefined);
+      if (username) {
+        try {
+          await clearMyAccessCache(username);
+        } catch (error) {
+          // Ignore silently
+        }
+      } else {
+        try {
+          await clearMyAccessCache();
+        } catch (error) {
+          // Ignore silently
+        }
       }
     }
 
@@ -188,7 +248,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn("⚠️ Failed to clear stored user:", error);
     }
     get().resetPermissions();
-    set({ isAuthenticated: false, user: null, isLoading: false, error: null });
+    useBootstrapStore.getState().clearBootstrap();
+    set({
+      isAuthenticated: false,
+      user: null,
+      isLoading: false,
+      error: null,
+      mobileConfig: DEFAULT_MOBILE_CONFIG,
+    });
   },
 
   checkAuth: async () => {
@@ -222,7 +289,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       try {
         tokenData = JSON.parse(tokenDataRaw) as TokenData;
       } catch (error) {
-        console.warn("⚠️ Invalid token data in storage, clearing session");
+        logger.warn("Invalid token data in storage, clearing session");
         await oauthApi.logout();
         await storage.removeUser().catch(() => {});
         set({ isAuthenticated: false, user: null, isLoading: false });
@@ -249,7 +316,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           
           if (isNonRecoverable) {
             // Refresh token is invalid - user must login again
-            console.log("❌ Refresh token is invalid/expired - logging out");
+            logger.info("Refresh token is invalid/expired - logging out");
             await oauthApi.logout();
             await storage.removeUser().catch(() => {});
             set({ isAuthenticated: false, user: null, isLoading: false });
@@ -257,21 +324,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           } else {
             // Temporary error (network/server) - keep user logged in
             // Token refresh will retry later when making API calls
-            console.log("⚠️ Temporary refresh failure (recoverable), keeping user logged in");
+            logger.info("Temporary refresh failure (recoverable), keeping user logged in");
             // Check if current token is still valid for now
             if (tokenData.expires_at && tokenData.expires_at > now) {
-              console.log("✅ Current token is still valid, continuing with existing token");
+              logger.info("Current token is still valid, continuing with existing token");
               // Continue with existing token
             } else {
               // Token is expired but refresh failed temporarily
               // Still keep user logged in - HTTP interceptor will retry on next API call
-              console.log("⚠️ Token expired but refresh failed temporarily - user stays logged in, will retry on next API call");
+              logger.info("Token expired but refresh failed temporarily - user stays logged in, will retry on next API call");
             }
           }
         } else if (refreshResult.data) {
           // Token refreshed successfully
           tokenData = refreshResult.data;
-          console.log("✅ Token refreshed successfully in checkAuth");
+          logger.info("Token refreshed successfully in checkAuth");
         }
       }
 
@@ -334,10 +401,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         isAuthenticated: true,
         user: storedUser,
-        isLoading: false,
         error: null,
       });
+      await get().loadMobileConfig();
       await get().loadPermissions();
+      set({ isLoading: false });
     } catch (error) {
       console.error("Auth check error:", error);
       set({
@@ -353,23 +421,50 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   updateServerConfig: async (config: Partial<ServerConfig>) => {
     const currentConfig = get().serverConfig;
-    const newConfig = { ...currentConfig, ...config };
+    const newConfig = applyNormalizedServerUrl({
+      ...currentConfig,
+      ...config,
+    });
+
+    const urlChanged =
+      (currentConfig.serverUrl || "") !== (newConfig.serverUrl || "");
 
     set({ serverConfig: newConfig });
+    if (newConfig.serverUrl) {
+      http.setBaseUrl(newConfig.serverUrl);
+    }
 
     try {
       await AsyncStorage.setItem("serverConfig", JSON.stringify(newConfig));
     } catch (error) {
       console.error("Failed to save server config:", error);
     }
+
+    // Re-fetch tenant bootstrap when the ERP site URL changes
+    if (urlChanged && get().isAuthenticated) {
+      useBootstrapStore.getState().clearBootstrap();
+      await get().loadMobileConfig();
+      await get().loadPermissions();
+    }
   },
 
   saveServerConfig: async (config: ServerConfig) => {
-    set({ serverConfig: config });
+    const previousUrl = get().serverConfig.serverUrl || "";
+    const newConfig = applyNormalizedServerUrl(config);
+    set({ serverConfig: newConfig });
+    http.setBaseUrl(newConfig.serverUrl || "");
     try {
-      await AsyncStorage.setItem("serverConfig", JSON.stringify(config));
+      await AsyncStorage.setItem("serverConfig", JSON.stringify(newConfig));
     } catch (error) {
       console.error("Failed to save server config:", error);
+    }
+    if (
+      previousUrl !== (newConfig.serverUrl || "") &&
+      get().isAuthenticated
+    ) {
+      useBootstrapStore.getState().clearBootstrap();
+      await get().loadMobileConfig();
+      await get().loadPermissions();
     }
   },
 
@@ -377,8 +472,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const savedConfig = await AsyncStorage.getItem("serverConfig");
       if (savedConfig) {
-        const config = JSON.parse(savedConfig);
+        const config = applyNormalizedServerUrl(JSON.parse(savedConfig));
         set({ serverConfig: config });
+        if (config.serverUrl) {
+          http.setBaseUrl(config.serverUrl);
+        }
+        // Persist healed URL so erp.printechs.com doesn't stick around
+        if (config.serverUrl) {
+          await AsyncStorage.setItem("serverConfig", JSON.stringify(config));
+        }
       }
     } catch (error) {
       console.error("Failed to load server config:", error);
@@ -397,19 +499,35 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   loadPermissions: async (overrideScope) => {
     try {
+      if (shouldUseMockData()) {
+        set({
+          permissions: {
+            fetched: true,
+            menus: {},
+            raw: [],
+            scope: undefined,
+          },
+        });
+        console.log("🔐 Mock/demo mode: skipping server permissions");
+        return;
+      }
+
       const user = get().user;
       console.log("🔐 Loading permissions for user:", user?.username);
       const defaultScope: Partial<AccessPermissionScope> = {
         ...overrideScope,
       };
 
-      let result = await getMyAccess(defaultScope);
+      let result = await getMyAccess(defaultScope, get().mobileConfig);
       let profiles = result.profiles;
-      let resolvedScope = result.scope ?? defaultScope;
+      let resolvedScope = normalizeAccessScope(result.scope ?? defaultScope);
 
       console.log("✅ Permissions fetched:", {
         count: profiles.length,
         scope: resolvedScope,
+        viewTerritories: resolvedScope.view_territories,
+        approveTerritories: resolvedScope.approve_territories,
+        allowViewAllSales: resolvedScope.allow_view_all_sales,
       });
 
       // If nothing matched, retry with inferred scope (e.g. branch/territory defaults)
@@ -437,32 +555,69 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         if (hasFallbackOverride) {
           console.log("🔄 Retry permissions with scope:", fallbackScope);
-          result = await getMyAccess(fallbackScope);
+          result = await getMyAccess(fallbackScope, get().mobileConfig);
           profiles = result.profiles;
-          resolvedScope = result.scope ?? fallbackScope;
+          resolvedScope = normalizeAccessScope(
+            result.scope ?? fallbackScope
+          );
           console.log("✅ Permissions fetched (retry):", {
             count: profiles.length,
             scope: resolvedScope,
+            viewTerritories: resolvedScope.view_territories,
+            approveTerritories: resolvedScope.approve_territories,
           });
         }
       }
 
       const menus: Record<string, boolean> = {};
-      profiles
-        .filter((item) => item.object_type === "Menu")
-        .forEach((item) => {
-          menus[item.object_key] = Boolean(item.can_view);
-        });
+      for (const item of profiles) {
+        const key = String(item.object_key || "").trim();
+        if (!key) continue;
+        const type = String(item.object_type || "").trim().toLowerCase();
+        const view = asTruthyFlag(item.can_view);
+        if (type === "menu") {
+          // Menu is authoritative for UI; if already set false, keep deny
+          if (menus[key] === false) continue;
+          menus[key] = view;
+        } else if (type === "api") {
+          // Deny wins if either Menu or API says false
+          if (menus[key] === false) continue;
+          if (!(key in menus)) menus[key] = view;
+          else if (!view) menus[key] = false;
+        }
+      }
 
       set({
         permissions: {
           fetched: true,
           menus,
           raw: profiles,
-          scope: resolvedScope as AccessPermissionScope,
+          scope: resolvedScope,
         },
       });
-      console.log("🧭 Menu permissions map:", menus);
+      if (__DEV__) {
+        const denied = Object.entries(menus)
+          .filter(([, v]) => !v)
+          .map(([k]) => k);
+        console.log("🧭 Menu permissions map:", menus);
+        console.log("🧭 Denied AO keys:", denied);
+        const c360 = profiles.filter((p) =>
+          /customer\s*360|get_customer_360|search_customers/i.test(
+            `${p.label || ""} ${p.object_key || ""}`
+          )
+        );
+        console.log(
+          "🧭 Customer 360 related AOs:",
+          c360.map((p) => ({
+            key: p.object_key,
+            label: p.label,
+            type: p.object_type,
+            can_view: p.can_view,
+          }))
+        );
+      } else {
+        console.log("🧭 Menu permissions map:", menus);
+      }
     } catch (error) {
       console.warn("⚠️ Failed to load permissions:", error);
       set({
@@ -473,6 +628,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           scope: undefined,
         },
       });
+    }
+  },
+
+  loadMobileConfig: async () => {
+    try {
+      // Prefer get_mobile_bootstrap; falls back to get_mobile_config inside fetch
+      const result = await useBootstrapStore.getState().loadBootstrap();
+      if (result?.mobileConfig) {
+        set({ mobileConfig: result.mobileConfig });
+        logger.info("Mobile config synced from bootstrap", {
+          source: result.bootstrap.source,
+          business_type: result.bootstrap.context.business_type,
+          version: result.mobileConfig.version,
+        });
+        return;
+      }
+      const config = await fetchMobileConfig();
+      set({ mobileConfig: config });
+    } catch (error) {
+      logger.warn("Failed to load mobile config/bootstrap", error);
+      set({ mobileConfig: DEFAULT_MOBILE_CONFIG });
     }
   },
 

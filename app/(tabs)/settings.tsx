@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -7,18 +7,26 @@ import {
   Alert,
   ScrollView,
   Image,
+  Platform,
 } from "react-native";
 import { router } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuthStore } from "../../src/store/auth";
+import { isDemoMode } from "../../src/api/demoMode";
 import { Ionicons } from "@expo/vector-icons";
 import { env } from "../../src/config/env";
 import { ServerConfig } from "../../src/components/ServerConfig";
 import { useUserProfile } from "../../src/hooks/useOptimizedApis";
+import { useNavigation } from "../../src/hooks/useNavigation";
+import { useBootstrapStore } from "../../src/store/bootstrap";
 
 export default function SettingsScreen() {
   const { user, logout, serverConfig } = useAuthStore();
   const [showServerConfig, setShowServerConfig] = useState(false);
   const { data: userProfile } = useUserProfile();
+  const insets = useSafeAreaInsets();
+  const { branding, businessType } = useNavigation();
+  const bootstrapSource = useBootstrapStore((s) => s.bootstrap?.source);
 
   const handleLogout = () => {
     Alert.alert("Logout", "Are you sure you want to logout?", [
@@ -35,6 +43,7 @@ export default function SettingsScreen() {
   };
 
   const getCurrentServerDisplay = () => {
+    if (isDemoMode()) return "Demo Server (sample data)";
     return serverConfig.serverUrl || "No server configured";
   };
 
@@ -55,7 +64,13 @@ export default function SettingsScreen() {
     null;
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{
+        paddingBottom: Math.max(insets.bottom, 16) + 24,
+      }}
+      keyboardShouldPersistTaps="handled"
+    >
       {/* User Info */}
       <View style={styles.userCard}>
         {imageUrl ? (
@@ -71,38 +86,64 @@ export default function SettingsScreen() {
           />
         )}
         <Text style={styles.userName}>
-          {userProfile?.employee_name || user?.full_name || user?.username || "User"}
+          {userProfile?.employee_name ||
+            user?.full_name ||
+            user?.username ||
+            "User"}
         </Text>
         <Text style={styles.userEmail}>{user?.username}</Text>
       </View>
 
-      {/* Server Configuration */}
-      <ServerConfig onSave={() => setShowServerConfig(false)} />
+      {/* Current config summary — edit opens the form with Save */}
+      {!showServerConfig ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Current Configuration</Text>
 
-      {/* Settings Options */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Current Configuration</Text>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Server URL:</Text>
+            <Text style={styles.infoValue}>{getCurrentServerDisplay()}</Text>
+          </View>
 
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Server URL:</Text>
-          <Text style={styles.infoValue}>{getCurrentServerDisplay()}</Text>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Workspace:</Text>
+            <Text style={styles.infoValue}>{branding.appTitle}</Text>
+          </View>
+
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Business type:</Text>
+            <Text style={styles.infoValue}>
+              {String(businessType).replace(/_/g, " ")}
+              {bootstrapSource ? ` · ${bootstrapSource}` : ""}
+            </Text>
+          </View>
+
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Environment:</Text>
+            <Text style={styles.infoValue}>
+              {env.BUILD_VARIANT.toUpperCase()}
+            </Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={() => setShowServerConfig(true)}
+          >
+            <Ionicons name="settings-outline" size={20} color="#667eea" />
+            <Text style={styles.editButtonText}>Configure Server</Text>
+          </TouchableOpacity>
         </View>
-
-        <View style={styles.infoRow}>
-          <Text style={styles.infoLabel}>Environment:</Text>
-          <Text style={styles.infoValue}>
-            {env.BUILD_VARIANT.toUpperCase()}
-          </Text>
+      ) : (
+        <View>
+          <TouchableOpacity
+            style={styles.backRow}
+            onPress={() => setShowServerConfig(false)}
+          >
+            <Ionicons name="chevron-back" size={20} color="#667eea" />
+            <Text style={styles.backText}>Back</Text>
+          </TouchableOpacity>
+          <ServerConfig onSave={() => setShowServerConfig(false)} />
         </View>
-
-        <TouchableOpacity
-          style={styles.editButton}
-          onPress={() => setShowServerConfig(!showServerConfig)}
-        >
-          <Ionicons name="settings-outline" size={20} color="#667eea" />
-          <Text style={styles.editButtonText}>Configure Server</Text>
-        </TouchableOpacity>
-      </View>
+      )}
 
       {/* Logout Button */}
       <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
@@ -121,6 +162,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f9fafb",
     padding: 16,
+    paddingTop: Platform.OS === "ios" ? 56 : 40,
   },
   userCard: {
     backgroundColor: "#ffffff",
@@ -177,6 +219,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#1f2937",
     fontWeight: "500",
+  },
+  backRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+    gap: 2,
+  },
+  backText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#667eea",
   },
   logoutButton: {
     flexDirection: "row",

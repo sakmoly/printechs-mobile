@@ -2,11 +2,11 @@
   "expo": {
     "name": "Printechs ERP Application",
     "slug": "erpnext-mobile",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "orientation": "portrait",
     "newArchEnabled": true,
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "description": "Enterprise Resource Planning mobile app for managing sales, inventory, receivables, and approvals on the go.",
     "primaryColor": "#667eea",
     "splash": {
@@ -14,13 +14,11 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.printechs.erpnext",
-      "buildNumber": "4",
+      "buildNumber": "11",
       "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to camera to scan QR codes",
@@ -31,9 +29,7 @@
           "NSAllowsArbitraryLoads": true
         },
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": [
-          "remote-notification"
-        ]
+        "UIBackgroundModes": ["remote-notification"]
       },
       "config": {
         "usesNonExemptEncryption": false
@@ -46,7 +42,7 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.printechs.erpnext",
-      "versionCode": 3,
+      "versionCode": 11,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
@@ -68,9 +64,7 @@
         {
           "icon": "./assets/notification-icon.png",
           "color": "#ffffff",
-          "sounds": [
-            "./assets/notification-sound.wav"
-          ]
+          "sounds": ["./assets/notification-sound.wav"]
         }
       ],
       "expo-font"
