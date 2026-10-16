@@ -20,6 +20,7 @@ import { Fonts, Type } from "../../theme/typography";
 import type { ResolvedDimension } from "../../dimensions";
 import type { DimensionValue } from "../../api/dimensions";
 import { useDimensionValues } from "../../hooks/useDimensionValues";
+import { useSafeScreenInsets } from "../SafeScreen";
 
 export const DIMENSION_FILTER_ALL = "__all__";
 
@@ -60,6 +61,7 @@ export function DimensionFilter({
   staticOptions,
   variant = "chips",
 }: Props) {
+  const { modalSheetPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const dataType = (dimension.data_type || "Data").toLowerCase();
@@ -227,7 +229,12 @@ export function DimensionFilter({
         onRequestClose={() => setModalOpen(false)}
       >
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+          <View
+            style={[
+              styles.modalCard,
+              { paddingBottom: modalSheetPaddingBottom },
+            ]}
+          >
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{dimension.label}</Text>
               <TouchableOpacity onPress={() => setModalOpen(false)}>
@@ -375,7 +382,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     maxHeight: "72%",
-    paddingBottom: Platform.OS === "ios" ? 28 : 16,
   },
   modalHeader: {
     flexDirection: "row",

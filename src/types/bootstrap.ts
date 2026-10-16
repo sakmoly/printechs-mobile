@@ -515,7 +515,8 @@ export function synthesizeWidgetRows(
         if (group == null && curGroup != null && batch.length) break;
         batch.push(cur);
         i += 1;
-        if (group == null && batch.length >= 2) break;
+        // Always pair into 2-up rows so mobile grids stay even (2×2, not 1×4)
+        if (batch.length >= 2) break;
       }
       rows.push({
         type: "row",

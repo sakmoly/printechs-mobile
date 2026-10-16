@@ -130,6 +130,19 @@ export function defaultPeriod(): DateRange {
   return resolvePeriod("ytd");
 }
 
+/** Rolling 365 days ending today (for supply / velocity). */
+export function trailingTwelveMonthsRange(now = new Date()): DateRange {
+  const today = startOfDay(now);
+  const from = new Date(today);
+  from.setDate(from.getDate() - 364);
+  return {
+    preset: "custom",
+    from_date: toIso(from),
+    to_date: toIso(today),
+    label: "Last 12 months",
+  };
+}
+
 const PERIOD_ALIASES: Record<string, PeriodPreset> = {
   today: "today",
   yesterday: "yesterday",

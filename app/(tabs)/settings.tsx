@@ -10,7 +10,10 @@ import {
   Platform,
 } from "react-native";
 import { router } from "expo-router";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 import { useAuthStore } from "../../src/store/auth";
 import { isDemoMode } from "../../src/api/demoMode";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,7 +27,7 @@ export default function SettingsScreen() {
   const { user, logout, serverConfig } = useAuthStore();
   const [showServerConfig, setShowServerConfig] = useState(false);
   const { data: userProfile } = useUserProfile();
-  const insets = useSafeAreaInsets();
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const { branding, businessType } = useNavigation();
   const bootstrapSource = useBootstrapStore((s) => s.bootstrap?.source);
 
@@ -64,13 +67,12 @@ export default function SettingsScreen() {
     null;
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={{
-        paddingBottom: Math.max(insets.bottom, 16) + 24,
-      }}
-      keyboardShouldPersistTaps="handled"
-    >
+    <SafeScreen aboveTabBar includeTop style={styles.flex}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{ paddingBottom: scrollPaddingBottom }}
+        keyboardShouldPersistTaps="handled"
+      >
       {/* User Info */}
       <View style={styles.userCard}>
         {imageUrl ? (
@@ -154,15 +156,16 @@ export default function SettingsScreen() {
       {/* Version */}
       <Text style={styles.version}>Version 2.0.0</Text>
     </ScrollView>
+    </SafeScreen>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1, backgroundColor: "#f9fafb" },
   container: {
     flex: 1,
     backgroundColor: "#f9fafb",
     padding: 16,
-    paddingTop: Platform.OS === "ios" ? 56 : 40,
   },
   userCard: {
     backgroundColor: "#ffffff",

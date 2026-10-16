@@ -21,10 +21,42 @@ import { isApiEnabled, isDimensionEnabled } from "./mobileConfig";
 import {
   filterBaParams,
   pickBaParams,
+  plainJsonClone,
   softParseOrRaw,
 } from "./apiResilience";
 import { ERP_ANALYSIS } from "./endpoints";
 import { logger } from "../utils/logger";
+import { isNetworkOrTlsError } from "./serverUrl";
+import {
+  approveActionErrorMessage,
+  parseApproveDocumentResult,
+  type ApproveDocumentResult,
+} from "../utils/approveResponse";
+
+async function postWithNetworkRetry<T>(
+  url: string,
+  payload: Record<string, unknown>,
+  options?: { timeoutMs?: number; attempts?: number }
+): Promise<T> {
+  const attempts = options?.attempts ?? 3;
+  const timeoutMs = options?.timeoutMs ?? 60_000;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await http.post<T>(url, payload, {
+        timeout: timeoutMs,
+        silentError: attempt < attempts - 1,
+      });
+    } catch (error) {
+      lastError = error;
+      const canRetry =
+        isNetworkOrTlsError(error) && attempt < attempts - 1;
+      if (!canRetry) throw error;
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
 
 /** Avoid repeating the same 417 guidance every focus/navigation */
 let pushTokenStore417Logged = false;
@@ -468,7 +500,18 @@ export const optimizedApis = {
           ])
         );
 
-        const apiData = response.message || response;
+        let apiData: any = response.message ?? response;
+        if (typeof apiData === "string") {
+          try {
+            apiData = JSON.parse(apiData);
+          } catch {
+            apiData = {};
+          }
+        }
+        if (!apiData || typeof apiData !== "object" || Array.isArray(apiData)) {
+          apiData = {};
+        }
+        apiData = plainJsonClone(apiData);
 
         // Calculate profit and margin for top_brands if not provided
         if (apiData.sales_dashboard?.top_brands) {
@@ -530,7 +573,7 @@ export const optimizedApis = {
         console.log(
           "✅ Custom Dashboard API loaded successfully with real data"
         );
-        return parsed;
+        return plainJsonClone(parsed);
       } catch (customError: any) {
         console.log("⚠️ Custom API failed:", customError);
         console.log("📊 Error details:", {
@@ -881,41 +924,49 @@ export const optimizedApis = {
       // GET ?level=territory&company=...
       // GET ?level=warehouse&territory=Jeddah&company=...
       // GET ?level=brand&territory=Jeddah&warehouse=Jeddah%20Main%20-%20WHS%20-%20PRNTX&company=...
-      const cleanParams = baParams(
-        {
-          level: params.level,
-          company,
-          warehouse: params.warehouse,
-          territory: params.territory,
-          territories: params.territories,
-          category: params.category,
-          item_group: params.item_group,
-          brand: params.brand,
-          item_code: params.item_code,
-          limit: params.limit,
-        },
-        [
-          "level",
-          "company",
-          "warehouse",
-          "territory",
-          "territories",
-          "category",
-          "item_group",
-          "brand",
-          "item_code",
-          "limit",
-        ]
-      );
+      const rawHierarchyParams = {
+        level: params.level,
+        company,
+        warehouse: params.warehouse,
+        territory: params.territory,
+        territories:
+          params.territories ??
+          (params.territory ? String(params.territory) : undefined),
+        category: params.category,
+        item_group: params.item_group,
+        brand: params.brand,
+        item_code: params.item_code,
+        limit: params.limit,
+      };
+      const cleanParams = baParams(rawHierarchyParams, [
+        "level",
+        "company",
+        "warehouse",
+        "territory",
+        "territories",
+        "category",
+        "item_group",
+        "brand",
+        "item_code",
+        "limit",
+      ]);
+      // Stock hierarchy must honor territory even if Desk disabled territory dimension chips elsewhere.
+      if (rawHierarchyParams.territory && !cleanParams.territory) {
+        cleanParams.territory = rawHierarchyParams.territory;
+      }
+      if (rawHierarchyParams.territories && !cleanParams.territories) {
+        cleanParams.territories = rawHierarchyParams.territories;
+      }
 
-      // Log request details for debugging
-      console.log("🔍 Inventory Hierarchy API Request:", {
-        url: "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
-        originalParams: params,
-        cleanParams: cleanParams,
-        level: cleanParams.level,
-        serverUrl,
-      });
+      if (__DEV__) {
+        console.log("🔍 Inventory Hierarchy API Request:", {
+          url: "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
+          originalParams: params,
+          cleanParams: cleanParams,
+          level: cleanParams.level,
+          serverUrl,
+        });
+      }
 
       const response = await http.get<any>(
         "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
@@ -931,18 +982,22 @@ export const optimizedApis = {
             ? payload.message
             : null;
 
-      console.log("✅ Inventory Hierarchy API Response:", {
-        level: params.level,
-        envelope: payload && !Array.isArray(payload) ? Object.keys(payload) : "array",
-        dataLength: Array.isArray(rows) ? rows.length : "not array",
-        sample: Array.isArray(rows) ? rows.slice(0, 2) : payload,
-      });
+      if (__DEV__) {
+        console.log("✅ Inventory Hierarchy API Response:", {
+          level: params.level,
+          envelope: payload && !Array.isArray(payload) ? Object.keys(payload) : "array",
+          dataLength: Array.isArray(rows) ? rows.length : "not array",
+          sample: Array.isArray(rows) ? rows.slice(0, 2) : payload,
+        });
+      }
 
       // Prefer full envelope { level, rows, meta }; UI normalizes either shape
       return payload;
     } catch (error: any) {
       // Silently log network errors - they're handled by the UI
-      console.log("⚠️ Inventory Hierarchy API Error:", error.message);
+      if (__DEV__) {
+        console.log("⚠️ Inventory Hierarchy API Error:", error.message);
+      }
 
       const serverMsg =
         error.response?.data?._server_messages ||
@@ -952,7 +1007,9 @@ export const optimizedApis = {
       // Extract error message from response
       let errorMessage = "Failed to load inventory hierarchy data";
       if (error.response?.status === 417) {
-        console.log("⚠️ Hierarchy 417 detail:", serverMsg);
+        if (__DEV__) {
+          console.log("⚠️ Hierarchy 417 detail:", serverMsg);
+        }
         errorMessage =
           typeof error.response?.data?.message === "string" &&
           error.response.data.message.trim()
@@ -1198,14 +1255,10 @@ export const optimizedApis = {
     } = {}
   ) {
     try {
-      console.log("✅ Calling Approvals API...");
-
       // Relative path — http client owns the base URL (avoids host+host doubling)
       const apiUrl = ERP_ANALYSIS.approvals.getAllApprovals;
 
       try {
-        console.log("🌐 Calling approvals API with production URL");
-
         // Approvals use approve_territories only (e.g. Dammam), never full view list
         let payload = baParams(params as any, [
           "status",
@@ -1235,132 +1288,49 @@ export const optimizedApis = {
           }
         }
 
-        // Enhanced logging for debugging missing invoices
-        const permissions = useAuthStore.getState().permissions.scope;
-        console.log("📤 Approvals API Request:", {
-          apiUrl,
-          baseUrl: http.getBaseUrl(),
-          payload,
-          territories: payload.territories,
-          approveTerritories: permissions?.approve_territories,
-          viewTerritories: permissions?.view_territories,
-          permissions: permissions,
-        });
-        console.log("🔍 User Details for Debugging:", {
-          user: useAuthStore.getState().user?.email,
-          company: permissions?.company,
-          viewTerritories: permissions?.view_territories,
-          approveTerritories: permissions?.approve_territories,
-          branch: permissions?.branch,
-          territory: permissions?.territory,
-        });
-
-        const response = await http.post<any>(apiUrl, payload);
-
-        // Handle nested message structure from production server
-        console.log(
-          "🔍 STEP 1 - Original response:",
-          JSON.stringify(response, null, 2)
-        );
+        const response = await postWithNetworkRetry<any>(apiUrl, payload);
 
         let apiData = response;
 
-        // Check if response.data.message.message exists (double nesting)
         if (apiData?.message?.message) {
-          console.log("🔧 Found double-nested message structure");
           apiData = apiData.message;
         }
 
-        // Use message property if it exists, otherwise use data directly
         apiData = apiData?.message || apiData;
 
-        console.log(
-          "🔍 STEP 2 - After extraction apiData:",
-          JSON.stringify(apiData, null, 2)
+        const parsed = softParseOrRaw(
+          ApprovalsResponseSchema,
+          apiData,
+          "approvals"
         );
-        console.log("📊 Number of approvals:", apiData?.approvals?.length || 0);
 
-        // Log each document type and check for specific invoice
-        if (apiData?.approvals) {
-          console.log("📑 Approvals array:", apiData.approvals);
-          const types = apiData.approvals.reduce((acc: any, item: any) => {
-            acc[item.doctype] = (acc[item.doctype] || 0) + 1;
-            return acc;
-          }, {});
-          console.log("📑 Document types in response:", types);
-          
-          // Check for specific invoice number (e.g., SID25-000014)
-          const specificInvoice = apiData.approvals.find(
-            (item: any) => item.name === "SID25-000014" || item.id === "SID25-000014"
-          );
-          if (specificInvoice) {
-            console.log("✅ Found SID25-000014:", JSON.stringify(specificInvoice, null, 2));
-          } else {
-            console.log("❌ SID25-000014 NOT found in approvals response");
-            console.log("📋 All invoice names in response:", 
-              apiData.approvals
-                .filter((item: any) => item.doctype === "Sales Invoice")
-                .map((item: any) => item.name || item.id)
-            );
-          }
-        } else {
-          console.log("❌ No approvals array found!");
-        }
-
-        // Log before validation
-        console.log("🔍 STEP 3 - About to validate, apiData structure:", {
-          hasApprovals: !!apiData?.approvals,
-          approvalsLength: apiData?.approvals?.length,
-          hasTotalPending: apiData?.total_pending !== undefined,
-          hasTotalApproved: apiData?.total_approved !== undefined,
-          hasTotalRejected: apiData?.total_rejected !== undefined,
-        });
-
-        // Try to parse the response, but log detailed error if validation fails
-        let parsed;
-        try {
-          parsed = softParseOrRaw(
-            ApprovalsResponseSchema,
-            apiData,
-            "approvals"
-          );
-          console.log("✅ Schema validation passed!");
-          console.log("✅ Approved items:", parsed.approvals?.length || 0);
-          console.log(
-            "✅ Approvals API loaded successfully with territory-filtered data"
-          );
-        } catch (validationError: any) {
-          console.error("❌ Schema validation error!");
-          console.error("❌ Error message:", validationError.message);
-          console.error("❌ Error issues:", validationError.issues);
-          console.error(
-            "❌ Data that failed validation:",
-            JSON.stringify(apiData, null, 2)
-          );
-          throw validationError;
-        }
-
-        console.log(
-          "🔍 STEP 4 - Returning parsed data with",
+        logger.debug(
+          "Approvals loaded",
           parsed?.approvals?.length || 0,
           "items"
         );
-        console.log("📋 Final parsed data preview:", {
-          approvalsCount: parsed?.approvals?.length || 0,
-          firstItemDoctype: parsed?.approvals?.[0]?.doctype,
-          firstItemName: parsed?.approvals?.[0]?.name,
-        });
         return parsed;
       } catch (customError: any) {
-        console.log("⚠️ Custom API failed:", customError);
-        console.log("✅ Error details:", {
-          message: customError?.message,
-          status: customError?.response?.status,
-          data: customError?.response?.data,
-        });
+        const network = isNetworkOrTlsError(customError);
+        logger.debug("Custom approvals API failed:", customError?.message);
 
-        // Return mock data as fallback (filtered by territory)
-        // Mock data shows documents from different territories
+        if (!shouldUseMockData()) {
+          if (network) {
+            logger.warn(
+              "Approvals API unreachable (network). Showing empty inbox — pull to refresh when online."
+            );
+          }
+          return {
+            approvals: [],
+            total_pending: 0,
+            total_approved: 0,
+            total_rejected: 0,
+            user_territory:
+              params.territories || params.territory || undefined,
+          } as ApprovalsData;
+        }
+
+        // Demo / mock only — sample documents by territory
         const allApprovals = [
           {
             id: "1",
@@ -1477,32 +1447,47 @@ export const optimizedApis = {
    * Approve a document
    * Returns: Success status
    */
-  async approveDocument(doctype: string, name: string, comment?: string) {
+  async approveDocument(
+    doctype: string,
+    name: string,
+    comment?: string
+  ): Promise<ApproveDocumentResult> {
     try {
       if (shouldUseMockData()) {
         console.log("✅ Demo: simulate approve", { doctype, name });
-        return { success: true, message: "Demo mode: approval simulated." };
+        return { status: "success" };
       }
 
-      console.log("✅ Approving document:", { doctype, name, comment });
+      logger.debug("Approving document", { doctype, name });
 
       const approveUrl = ERP_ANALYSIS.approvals.approveDocument;
 
       try {
-        const response = await http.post<any>(approveUrl, {
-          doctype,
-          name,
-          comment,
-        });
+        const response = await postWithNetworkRetry<any>(
+          approveUrl,
+          { doctype, name, comment },
+          { timeoutMs: 120_000, attempts: 2 }
+        );
 
-        console.log("✅ Document approved successfully");
-        console.log("📄 Response:", response.message || response);
-        return response.message || response;
+        const raw = response?.message ?? response;
+        const parsed = parseApproveDocumentResult(raw);
+        if (
+          parsed.status &&
+          parsed.status !== "success" &&
+          parsed.status !== "ok"
+        ) {
+          throw new Error(
+            typeof raw === "object" && raw && "message" in (raw as object)
+              ? String((raw as { message?: string }).message || parsed.status)
+              : `Approve failed (${parsed.status})`
+          );
+        }
+        logger.debug("Document approved", parsed);
+        return parsed;
       } catch (customError: any) {
-        console.log("⚠️ Approve API failed:", customError);
-        console.log("📄 Error Response Data:", customError?.response?.data);
-        console.log("📄 Error Status:", customError?.response?.status);
-        console.log("📄 Error Headers:", customError?.response?.headers);
+        logger.debug("Approve API failed", {
+          status: customError?.response?.status,
+        });
 
         // Extract detailed error message from ERPNext response
         let errorMessage = "Failed to approve document. Please try again.";
@@ -1637,11 +1622,16 @@ export const optimizedApis = {
           // Do nothing, error message already contains the validation message
         }
 
-        console.log("📄 Final Error Message for User:", errorMessage);
+        if (isNetworkOrTlsError(customError)) {
+          errorMessage = approveActionErrorMessage(customError, "approve");
+        }
+
         throw new Error(errorMessage);
       }
     } catch (error) {
-      console.error("❌ Approve Document Error:", error);
+      if (isNetworkOrTlsError(error)) {
+        throw new Error(approveActionErrorMessage(error, "approve"));
+      }
       throw error;
     }
   },
@@ -1657,25 +1647,23 @@ export const optimizedApis = {
         return { success: true, message: "Demo mode: rejection simulated." };
       }
 
-      console.log("❌ Rejecting document:", { doctype, name, reason });
+      logger.debug("Rejecting document", { doctype, name });
 
       const rejectUrl = ERP_ANALYSIS.approvals.rejectDocument;
 
       try {
-        const response = await http.post<any>(rejectUrl, {
-          doctype,
-          name,
-          reason,
-        });
+        const response = await postWithNetworkRetry<any>(
+          rejectUrl,
+          { doctype, name, reason },
+          { timeoutMs: 120_000, attempts: 2 }
+        );
 
-        console.log("✅ Document rejected successfully");
-        console.log("📄 Response:", response.message || response);
+        logger.debug("Document rejected");
         return response.message || response;
       } catch (customError: any) {
-        console.log("⚠️ Reject API failed:", customError);
-        console.log("📄 Error Response Data:", customError?.response?.data);
-        console.log("📄 Error Status:", customError?.response?.status);
-        console.log("📄 Error Headers:", customError?.response?.headers);
+        logger.debug("Reject API failed", {
+          status: customError?.response?.status,
+        });
 
         // Extract detailed error message from ERPNext response
         let errorMessage = "Failed to reject document. Please try again.";
@@ -1706,11 +1694,16 @@ export const optimizedApis = {
           errorMessage = customError.message;
         }
 
-        console.log("📄 Final Error Message for User:", errorMessage);
+        if (isNetworkOrTlsError(customError)) {
+          errorMessage = approveActionErrorMessage(customError, "reject");
+        }
+
         throw new Error(errorMessage);
       }
     } catch (error) {
-      console.error("❌ Reject Document Error:", error);
+      if (isNetworkOrTlsError(error)) {
+        throw new Error(approveActionErrorMessage(error, "reject"));
+      }
       throw error;
     }
   },
@@ -1750,21 +1743,28 @@ export const optimizedApis = {
         country: (currentUser as any).country || "",
       };
 
-      // Direct call to the new backend endpoint
-      console.log("🌐 Calling new get_employee_profile endpoint");
       let apiData: any;
       try {
+        await oauthApi.ensureValidToken();
         const response = await http.get<any>(
-          "/api/method/erp_analysis.employee.get_employee_profile",
-          baParams({ email: currentUser.email }, ["email"])
+          ERP_ANALYSIS.employee.getEmployeeProfile,
+          baParams({ email: currentUser.email }, ["email"]),
+          { silentError: true }
         );
         apiData = response.message || response;
       } catch (profileError) {
-        // Network / missing method — keep session usable with login identity
-        console.warn(
-          "⚠️ get_employee_profile unavailable, using login profile:",
-          profileError
-        );
+        const st = (profileError as { response?: { status?: number } })
+          ?.response?.status;
+        if (st === 401 || st === 403) {
+          logger.debug(
+            "get_employee_profile auth failed — using login profile fallback"
+          );
+        } else {
+          logger.warn(
+            "get_employee_profile unavailable, using login profile",
+            profileError
+          );
+        }
         const payload = {
           user_profile: fallbackProfile,
           qr_data: generateQRDataFromEmployee(fallbackProfile as any),
@@ -1810,87 +1810,21 @@ export const optimizedApis = {
    * Send Statement of Account via Email
    * Returns: Success message
    */
-  async sendStatementByEmail(customer_name: string) {
+  async sendStatementByEmail(
+    customerInput: string,
+    opts?: { company?: string }
+  ) {
+    if (shouldUseMockData()) {
+      return { success: true, message: "Demo mode: email not sent." };
+    }
+    const { sendCustomerStatementEmail } = await import("./customerStatement");
     try {
-      if (shouldUseMockData()) {
-        return { success: true, message: "Demo mode: email not sent." };
-      }
-      console.log(
-        "📧 Sending Statement of Account via email for:",
-        customer_name
-      );
-
-      const emailUrl = ERP_ANALYSIS.customerNotifications.sendStatementPdf;
-
-      try {
-        const response = await http.post<any>(emailUrl, {
-          customer_name,
-        });
-
-        console.log("✅ Statement sent successfully via email");
-        console.log("📄 Response:", response.message || response);
-        return response.message || response;
-      } catch (customError: any) {
-        console.log("⚠️ Send Email API failed:", customError);
-        console.log("📄 Error Response Data:", customError?.response?.data);
-        console.log("📄 Error Status:", customError?.response?.status);
-
-        // Extract detailed error message from ERPNext response
-        let errorMessage =
-          "Failed to send statement via email. Please try again.";
-
-        // ERPNext usually returns error in this format
-        if (customError?.response?.data) {
-          const errorData = customError.response.data;
-
-          // Check for different error formats
-          if (errorData.message) {
-            // If message is an array, extract the actual error
-            if (Array.isArray(errorData.message)) {
-              const errorString = errorData.message[0] || "";
-              // Extract user-friendly error message
-              if (errorString.includes("Too many requests")) {
-                errorMessage =
-                  "Too many requests. Please wait an hour before requesting again.";
-              } else if (errorString.includes("Failed to send statement")) {
-                // Extract the actual error after "Failed to send statement:"
-                const match = errorString.match(
-                  /Failed to send statement: (.+)/
-                );
-                errorMessage = match
-                  ? match[1]
-                  : "Failed to send statement. Please try again.";
-              } else {
-                errorMessage =
-                  "Failed to send statement via email. Please try again.";
-              }
-            } else if (typeof errorData.message === "string") {
-              errorMessage = errorData.message;
-            }
-          } else if (errorData.exc) {
-            // ERPNext exception - extract the actual error message
-            const excMatch = errorData.exc.match(
-              /Traceback.*?\n(.*?)(?:\n|$)/s
-            );
-            if (excMatch) {
-              errorMessage = excMatch[1].trim();
-            } else {
-              errorMessage = errorData.exc;
-            }
-          } else if (errorData.exc_type) {
-            errorMessage = errorData.exc_message || errorData.exc_type;
-          } else if (typeof errorData === "string") {
-            errorMessage = errorData;
-          }
-        } else if (customError?.message) {
-          errorMessage = customError.message;
-        }
-
-        console.log("📄 Final Error Message for User:", errorMessage);
-        throw new Error(errorMessage);
-      }
+      return await sendCustomerStatementEmail({
+        customer: customerInput,
+        company: opts?.company,
+      });
     } catch (error) {
-      console.error("❌ Send Email Error:", error);
+      console.warn("⚠️ Send statement email failed:", (error as Error)?.message);
       throw error;
     }
   },
@@ -2117,27 +2051,22 @@ export const optimizedApis = {
     from_date?: string;
     to_date?: string;
   }) {
+    const disabled = getDisabledFallback("get_customer_statement", null);
+    if (disabled.skip) return disabled.value;
+
+    const { fetchCustomerStatement } = await import("./customerStatement");
     try {
-      const disabled = getDisabledFallback("get_customer_statement", null);
-      if (disabled.skip) return disabled.value;
-
-      const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
-      http.setBaseUrl(serverUrl);
-      const accessToken = await oauthApi.getValidToken();
-      if (!accessToken) throw new Error("No valid access token available");
-
-      const response = await http.get<any>(
-        "/api/method/erp_analysis.receivables.get_customer_statement",
-        baParams(params as any, [
-          "company",
-          "customer",
-          "from_date",
-          "to_date",
-        ])
-      );
-      return response.message || response;
+      return await fetchCustomerStatement(params);
     } catch (error) {
-      console.error("❌ Customer Statement API Error:", error);
+      const status = (error as { response?: { status?: number } })?.response
+        ?.status;
+      if (status === 403) {
+        console.warn(
+          "⚠️ Customer statement unavailable (403) — check Access Profile for receivables statement"
+        );
+      } else {
+        console.warn("⚠️ Customer statement failed:", (error as Error)?.message);
+      }
       throw error;
     }
   },

@@ -3,10 +3,11 @@ import { useAuthStore } from "../store/auth";
 import { oauthApi } from "./oauth";
 import { ERP_ANALYSIS } from "./endpoints";
 import { isApiEnabled } from "./mobileConfig";
-import { isMissingBaMethodError } from "./baErrors";
+import { isBaPermissionDeniedError, isMissingBaMethodError } from "./baErrors";
 import {
   demoDataOnlyWhenNoServer,
   filterBaParams,
+  restoreTerritoryBaParams,
   isBaMethodKnownMissing,
   markBaMethodMissing,
   resolveCompanyName,
@@ -19,6 +20,7 @@ import {
   type ProfitabilityDashboard,
   type ProfitRow,
 } from "./profitabilityTypes";
+import { rowMatchesTerritory } from "../utils/dashboardTerritory";
 
 export type ProfitabilityParams = {
   company?: string;
@@ -107,6 +109,107 @@ function mapTerritoryRow(r: any): ProfitRow {
  * Live GP from existing sales_kpis / complete dashboard APIs when
  * erp_analysis.profitability.get_profitability_dashboard is not installed.
  */
+/** Live sales / executive path — use when get_profitability_dashboard is 403 or missing. */
+export async function fetchProfitabilityFromLiveSales(
+  params: ProfitabilityParams = {}
+): Promise<ProfitabilityDashboard> {
+  return fetchProfitabilityViaLiveSales(params);
+}
+
+/**
+ * Territory-scoped cost of sales for inventory turnover (COGS ÷ avg stock).
+ * Falls back through by_territory rows, GP margin, then sales_kpis POST.
+ */
+export async function fetchTerritoryCostOfSales(
+  params: ProfitabilityParams = {}
+): Promise<{ sales: number; cogs: number }> {
+  const territory = String(params.territory || "").trim();
+  const prof = await fetchProfitabilityFromLiveSales(params);
+
+  let sales = prof.kpis.sales;
+  let cogs = prof.kpis.cogs;
+
+  if (territory && prof.by_territory?.length) {
+    const row = prof.by_territory.find(
+      (r) =>
+        rowMatchesTerritory(r.name, territory) ||
+        rowMatchesTerritory(r.id, territory)
+    );
+    if (row && row.sales > 0) {
+      sales = row.sales;
+      if (row.cogs != null && row.cogs > 0) {
+        cogs = row.cogs;
+      } else if (row.gp != null && Number.isFinite(row.gp)) {
+        cogs = Math.max(0, sales - row.gp);
+      }
+    }
+  }
+
+  if (cogs <= 0 && sales > 0) {
+    const gp = prof.kpis.gp;
+    const gpPct = prof.kpis.gp_pct;
+    if (gp > 0 && gp < sales) {
+      cogs = sales - gp;
+    } else if (gpPct > 0 && gpPct < 100) {
+      cogs = sales * (1 - gpPct / 100);
+    }
+  }
+
+  if (cogs <= 0 && territory) {
+    try {
+      await prepare();
+      const state = useAuthStore.getState();
+      const cfg = state.mobileConfig;
+      const company =
+        params.company ||
+        resolveCompanyName(
+          state.permissions.scope?.company,
+          state.user?.company
+        );
+      const raw = {
+        company,
+        from_date: params.from_date,
+        to_date: params.to_date,
+        period: params.period,
+        territory,
+      };
+      const clean = restoreTerritoryBaParams(
+        raw,
+        filterBaParams(raw, cfg)
+      );
+      const res = await http.post<any>(
+        ERP_ANALYSIS.salesKpis.getSalesDashboard,
+        clean
+      );
+      let apiData = unwrapFrappeMessage(res);
+      if (apiData?.message && typeof apiData.message === "object") {
+        apiData = apiData.message;
+      }
+      const total = n(
+        apiData?.total_sales ?? apiData?.sales ?? apiData?.net_sales
+      );
+      const gp = n(
+        apiData?.gross_profit ?? apiData?.gp ?? apiData?.gross_profit_amount
+      );
+      const gpPct = n(
+        apiData?.gross_profit_percentage ?? apiData?.gp_pct ?? apiData?.margin
+      );
+      if (total > 0) {
+        sales = total;
+        if (gp > 0 && gp <= total) {
+          cogs = total - gp;
+        } else if (gpPct > 0 && gpPct < 100) {
+          cogs = total * (1 - gpPct / 100);
+        }
+      }
+    } catch {
+      /* optional */
+    }
+  }
+
+  return { sales, cogs };
+}
+
 async function fetchProfitabilityViaLiveSales(
   params: ProfitabilityParams
 ): Promise<ProfitabilityDashboard> {
@@ -120,17 +223,18 @@ async function fetchProfitabilityViaLiveSales(
       state.user?.company
     );
 
-  const clean = filterBaParams(
-    {
-      company,
-      from_date: params.from_date,
-      to_date: params.to_date,
-      period: params.period,
-      territory: params.territory,
-      brand: params.brand,
-      division: params.division,
-    },
-    cfg
+  const rawSales = {
+    company,
+    from_date: params.from_date,
+    to_date: params.to_date,
+    period: params.period,
+    territory: params.territory,
+    brand: params.brand,
+    division: params.division,
+  };
+  const clean = restoreTerritoryBaParams(
+    rawSales,
+    filterBaParams(rawSales, cfg)
   );
 
   // 1) Prefer sales_kpis dashboard (already live on Printechs)
@@ -305,9 +409,14 @@ export async function fetchProfitabilityDashboard(
         state.permissions.scope?.company,
         state.user?.company
       );
+    const rawProf = { ...params, company };
     const response = await http.get<any>(
       ERP_ANALYSIS.profitability.getDashboard,
-      filterBaParams({ ...params, company }, cfg)
+      restoreTerritoryBaParams(
+        rawProf,
+        filterBaParams(rawProf, cfg)
+      ),
+      { silentError: true }
     );
     return normalizeProfitabilityDashboard(unwrapFrappeMessage(response));
   };
@@ -331,10 +440,17 @@ export async function fetchProfitabilityDashboard(
         console.log(
           "ℹ️ get_profitability_dashboard missing — using live sales GP APIs"
         );
-      } else {
+      } else if (isBaPermissionDeniedError(error)) {
+        markBaMethodMissing("get_profitability_dashboard");
+        if (__DEV__) {
+          console.log(
+            "ℹ️ get_profitability_dashboard not permitted — using live sales GP APIs"
+          );
+        }
+      } else if (__DEV__) {
         console.warn(
           "⚠️ get_profitability_dashboard failed — trying live sales GP:",
-          error
+          (error as Error)?.message || error
         );
       }
     }

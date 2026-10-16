@@ -6,7 +6,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuthStore } from "../../src/store/auth";
 import { useBootstrapStore } from "../../src/store/bootstrap";
 import { resolveTabVisibility } from "../../src/modules/resolveTabs";
+import { useBackgroundDashboardPrefetch } from "../../src/hooks/useBackgroundDashboardPrefetch";
 import { useNavigation } from "../../src/hooks/useNavigation";
+import { systemHomeClearance } from "../../src/components/SafeScreen";
 
 const ACCENT = "#667eea";
 const INACTIVE = "#94a3b8";
@@ -28,27 +30,30 @@ function TabIcon({
   );
 }
 
+/** Hide from tab bar but keep navigator mounted so the bar stays visible. */
+const HIDDEN_TAB = { href: null as null };
+
 export default function TabsLayout() {
   const permissions = useAuthStore((s) => s.permissions);
   const moduleMap = useBootstrapStore((s) => s.moduleMap);
   const loaded = useBootstrapStore((s) => s.loaded);
   const { moduleLabel } = useNavigation();
   const insets = useSafeAreaInsets();
+  useBackgroundDashboardPrefetch();
 
   const tabs = useMemo(
     () => resolveTabVisibility(permissions),
     [permissions, moduleMap, loaded]
   );
 
-  const bottomInset = Math.max(
-    insets.bottom,
-    Platform.OS === "android" ? 12 : 0
-  );
-  const tabBarPaddingBottom = bottomInset + 6;
+  const tabBarPaddingBottom = systemHomeClearance(insets.bottom, 6);
   const tabBarHeight = TAB_CONTENT_HEIGHT + tabBarPaddingBottom;
 
   return (
     <Tabs
+      // Default (esp. Android) is firstRoute → Home. Board screens live as
+      // sibling tabs, so Back must follow visit history (e.g. More → board).
+      backBehavior="history"
       safeAreaInsets={{ bottom: 0 }}
       screenOptions={{
         headerShown: false,
@@ -82,7 +87,7 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Home",
-          href: tabs.home ? "/(tabs)" : null,
+          href: "/(tabs)",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "home" : "home-outline"}
@@ -161,6 +166,25 @@ export default function TabsLayout() {
           ),
         }}
       />
+
+      {/* Stack-style screens — tab bar stays visible */}
+      <Tabs.Screen name="dashboard-board/[boardKey]" options={HIDDEN_TAB} />
+      <Tabs.Screen name="board-tabs/[moduleKey]" options={HIDDEN_TAB} />
+      <Tabs.Screen name="report-list/[moduleKey]" options={HIDDEN_TAB} />
+      <Tabs.Screen name="customer-360" options={HIDDEN_TAB} />
+      <Tabs.Screen name="customer-statement" options={HIDDEN_TAB} />
+      <Tabs.Screen name="generic-analysis" options={HIDDEN_TAB} />
+      <Tabs.Screen name="user-profile" options={HIDDEN_TAB} />
+      <Tabs.Screen name="employee-profile/[id]" options={HIDDEN_TAB} />
+      <Tabs.Screen name="kpi-details" options={HIDDEN_TAB} />
+      <Tabs.Screen name="receivables-widget-list" options={HIDDEN_TAB} />
+      <Tabs.Screen name="sales-widget-list" options={HIDDEN_TAB} />
+      <Tabs.Screen name="inventory-widget-detail" options={HIDDEN_TAB} />
+      <Tabs.Screen name="inventory-stock-by-brand" options={HIDDEN_TAB} />
+      <Tabs.Screen name="inventory-item-stock" options={HIDDEN_TAB} />
+      <Tabs.Screen name="pdf-viewer" options={HIDDEN_TAB} />
+      <Tabs.Screen name="flip-web" options={HIDDEN_TAB} />
+      <Tabs.Screen name="youtube-video" options={HIDDEN_TAB} />
     </Tabs>
   );
 }

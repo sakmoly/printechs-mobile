@@ -18,7 +18,6 @@ import { RankingCard } from "../components/RankingCard";
 import { formatCurrency } from "../utils/currency";
 import { Fonts, Type } from "../theme/typography";
 import { navigateToModule } from "../modules/navigateToModule";
-import { resolveModuleEntry } from "../modules/registry";
 import type { WidgetRenderProps } from "./types";
 import { resolveChartColors } from "./chartColors";
 import { LySummaryBanner } from "./LySummaryBanner";
@@ -110,7 +109,8 @@ function resolveLinkTarget(props: WidgetRenderProps): {
     .replace(/^link_/i, "")
     .replace(/__\d+$/i, "")
     .trim();
-  if (fromKey && resolveModuleEntry(fromKey)) {
+  if (fromKey) {
+    // Built-in tool or backend board by key
     return { kind: "module", target: fromKey };
   }
 
@@ -203,7 +203,10 @@ function LoadingOrEmpty({
     return <Text style={styles.error}>{data.error}</Text>;
   }
   const ly = resolveWidgetLy(data);
-  if (!hasRows && !(ly.showLy && ly.summary)) {
+  const hasSummary =
+    data.chart?.summary?.value != null &&
+    Number.isFinite(Number(data.chart.summary.value));
+  if (!hasRows && !hasSummary && !(ly.showLy && ly.summary)) {
     return <Text style={styles.hint}>{empty}</Text>;
   }
   return null;
@@ -275,6 +278,20 @@ export function KpiWidget(props: WidgetRenderProps) {
   const fromApi = data.kpis || [];
   const ly = resolveWidgetLy(data);
   const hasLySummary = Boolean(ly.showLy && ly.summary?.value_ly != null);
+  const summaryVal = data.chart?.summary?.value;
+  const hasSummary =
+    summaryVal != null && Number.isFinite(Number(summaryVal));
+
+  // Hide only true empties — never leave a blank flex shell (breaks 2-col grids)
+  const hasAny =
+    fromApi.length > 0 ||
+    hasLySummary ||
+    hasSummary ||
+    Boolean(data.rows?.length);
+  if (!data.loading && !data.error && !hasAny) {
+    return null;
+  }
+
   const chrome = resolveKpiChrome({
     ...(config || {}),
     ...(data.config || {}),
@@ -296,6 +313,19 @@ export function KpiWidget(props: WidgetRenderProps) {
           label,
           value: totalFromRows,
           format: "currency" as const,
+        }
+      : null) ||
+    (hasSummary
+      ? {
+          key: "summary",
+          label,
+          value: Number(summaryVal),
+          format:
+            (data.chart?.summary as { format?: string } | undefined)?.format ||
+            (data.config?.format as string | undefined) ||
+            "number",
+          previous: ly.showLy ? data.chart?.summary?.value_ly ?? null : null,
+          change_pct: ly.showLy ? data.chart?.summary?.change_pct ?? null : null,
         }
       : null);
 
@@ -335,6 +365,10 @@ export function KpiWidget(props: WidgetRenderProps) {
     const color =
       (hasLySummary && ly.summary?.display?.color) ||
       (change != null && change < 0 ? "#dc2626" : change != null && change > 0 ? "#16a34a" : "#64748b");
+    const fmt =
+      (primary as { format?: string } | null)?.format ||
+      (data.config?.format as string | undefined) ||
+      "currency";
     return (
       <Shell label={displayTitle} hideTitle compact {...drillShellProps(props)}>
         {status}
@@ -343,10 +377,12 @@ export function KpiWidget(props: WidgetRenderProps) {
             {displayTitle}
           </Text>
           <Text style={styles.columnValue}>
-            {formatCurrency(value, data.currency || "SAR", {
-              compact: true,
-              hideCode: true,
-            })}
+            {fmt === "percent" || fmt === "pct" || /%/.test(displayTitle)
+              ? `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`
+              : formatCurrency(value, data.currency || "SAR", {
+                  compact: true,
+                  hideCode: true,
+                })}
           </Text>
           {(prev != null || change != null) && (
             <View style={styles.columnMeta}>
@@ -370,6 +406,11 @@ export function KpiWidget(props: WidgetRenderProps) {
         </View>
       </Shell>
     );
+  }
+
+  // Compact slot with nothing to draw → omit (avoid empty flex column)
+  if (compact && !data.loading && !data.error) {
+    return null;
   }
 
   // Full-width header layout: one line — title then value
@@ -441,7 +482,7 @@ export function KpiWidget(props: WidgetRenderProps) {
   return (
     <Shell
       label={label || displayTitle}
-      hideTitle={compact || Boolean(hasLySummary)}
+      hideTitle={compact || Boolean(hasLySummary) || Boolean(props.hideTitle)}
       compact={compact}
       {...drillShellProps(props)}
     >
@@ -500,11 +541,11 @@ function chartCfg(props: WidgetRenderProps) {
 }
 
 export function BarWidget(props: WidgetRenderProps) {
-  const { label, data, onSliceTap, drillable } = props;
+  const { label, data, onSliceTap, drillable, hideTitle } = props;
   const rows = chartRowsFromData(data);
   const status = <LoadingOrEmpty data={data} empty="No chart data" />;
   return (
-    <Shell label={label} {...drillShellProps(props)}>
+    <Shell label={label} hideTitle={hideTitle} {...drillShellProps(props)}>
       {status}
       <LyHeader data={data} hideMetricLabel />
       {rows?.length ? (
@@ -531,11 +572,11 @@ export function BarWidget(props: WidgetRenderProps) {
 }
 
 export function LineWidget(props: WidgetRenderProps) {
-  const { label, data, onSliceTap, drillable } = props;
+  const { label, data, onSliceTap, drillable, hideTitle } = props;
   const rows = chartRowsFromData(data);
   const status = <LoadingOrEmpty data={data} empty="No line data" />;
   return (
-    <Shell label={label} {...drillShellProps(props)}>
+    <Shell label={label} hideTitle={hideTitle} {...drillShellProps(props)}>
       {status}
       <LyHeader data={data} hideMetricLabel />
       {rows?.length ? (
@@ -562,12 +603,12 @@ export function LineWidget(props: WidgetRenderProps) {
 }
 
 export function PieWidget(props: WidgetRenderProps) {
-  const { label, data, onSliceTap, drillable } = props;
+  const { label, data, onSliceTap, drillable, hideTitle } = props;
   const ly = resolveWidgetLy(data);
   const rows = chartRowsFromData(data);
   const status = <LoadingOrEmpty data={data} empty="No pie data" />;
   return (
-    <Shell label={label} {...drillShellProps(props)}>
+    <Shell label={label} hideTitle={hideTitle} {...drillShellProps(props)}>
       {status}
       <LyHeader data={data} hideMetricLabel />
       {rows?.length ? (
@@ -595,12 +636,12 @@ export function PieWidget(props: WidgetRenderProps) {
 }
 
 export function DonutWidget(props: WidgetRenderProps) {
-  const { label, data, onSliceTap, drillable } = props;
+  const { label, data, onSliceTap, drillable, hideTitle } = props;
   const ly = resolveWidgetLy(data);
   const rows = chartRowsFromData(data);
   const status = <LoadingOrEmpty data={data} empty="No donut data" />;
   return (
-    <Shell label={label} {...drillShellProps(props)}>
+    <Shell label={label} hideTitle={hideTitle} {...drillShellProps(props)}>
       {status}
       <LyHeader data={data} hideMetricLabel />
       {rows?.length ? (
@@ -629,7 +670,7 @@ export function DonutWidget(props: WidgetRenderProps) {
 }
 
 export function TableWidget(props: WidgetRenderProps) {
-  const { label, data, onSliceTap, drillable, config } = props;
+  const { label, data, onSliceTap, drillable, config, hideTitle } = props;
   const rows = data.table?.rows?.length ? data.table.rows : data.rows;
   // Board API columns = structure; Desk config.columns / table_columns = layout overlay
   const fromApi = resolveTableColumns(data.table?.columns, data.table);
@@ -643,27 +684,9 @@ export function TableWidget(props: WidgetRenderProps) {
     (data.config as any)?.table
   );
   const columns = mergeTableColumnLayout(fromApi, fromDesk) || fromApi || fromDesk;
-  if (__DEV__) {
-    console.log("[TableWidget]", {
-      key: props.widgetKey,
-      source: fromDesk?.length
-        ? fromApi?.length
-          ? "api+desk"
-          : "desk"
-        : fromApi?.length
-          ? "api"
-          : "none",
-      resolvedColumns: (columns || []).map(
-        (c) =>
-          `${c.key}:flex=${c.flex ?? "-"}:w=${c.width ?? "-"}:min=${c.min_width ?? "-"}`
-      ),
-      deskConfigKeys: config ? Object.keys(config).slice(0, 16) : [],
-      hasDeskColumns: Boolean(fromDesk?.length),
-    });
-  }
   const status = <LoadingOrEmpty data={data} empty="No table rows" />;
   return (
-    <Shell label={label} {...drillShellProps(props)}>
+    <Shell label={label} hideTitle={hideTitle} {...drillShellProps(props)}>
       {status}
       {rows?.length ? (
         <AnalysisTable
@@ -876,7 +899,9 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   shellCompact: {
-    marginBottom: 8,
+    marginBottom: 0,
+    flex: 1,
+    width: "100%",
   },
   shellHeader: {
     flexDirection: "row",
@@ -960,6 +985,7 @@ const styles = StyleSheet.create({
   },
   kpiColumn: {
     flex: 1,
+    width: "100%",
     minHeight: 88,
     justifyContent: "flex-start",
   },
@@ -970,6 +996,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
     marginBottom: 6,
+    minHeight: 28,
   },
   columnValue: {
     fontFamily: Fonts.bodyBold,

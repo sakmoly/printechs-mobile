@@ -37,21 +37,8 @@ export function buildDefaultModuleList(
     "home",
     "approvals",
     "settings",
-    "sales",
-    "salesperson",
-    "product_performance",
     "customer_360",
-    "sales_orders",
-    "profitability",
-    "receivables",
-    "collection",
-    "payables",
-    "inventory",
-    "inventory_health",
-    "purchase",
-    "exceptions",
     "analytics",
-    "approval_analytics",
     "employees",
     "catalogue",
   ];
@@ -111,6 +98,20 @@ export function bootstrapFromMobileConfig(
   config: MobileConfig,
   source: MobileBootstrap["source"] = "mobile_config"
 ): MobileBootstrap {
+  const dashboards = normalizeDashboardBoards(
+    config.dashboards?.map((d, i) => ({
+      key: d.id || `board-${i}`,
+      title: d.title || d.id,
+      widgets: (d.widgets || []).map((w, wi) => ({
+        key: w.id || `w-${wi}`,
+        label: w.title || w.id,
+        type: w.type,
+        props: w.props,
+        sort_order: (wi + 1) * 10,
+      })),
+    }))
+  );
+
   return {
     schema_version: BOOTSTRAP_SCHEMA_VERSION,
     api_version: config.version,
@@ -124,15 +125,18 @@ export function bootstrapFromMobileConfig(
     modules: buildDefaultModuleList(config.modules),
     dimensions: dimensionsFromFlags(config.dimensions),
     dashboard: normalizeDashboardWidgets(
-      (config.dashboards?.[0]?.widgets || []).map((w, i) => ({
-        key: w.id || `w-${i}`,
-        id: w.id,
-        title: w.title,
-        type: w.type,
-        props: w.props,
-        sort_order: (i + 1) * 10,
-      }))
+      dashboards[0]?.widgets?.length
+        ? dashboards[0].widgets
+        : (config.dashboards?.[0]?.widgets || []).map((w, i) => ({
+            key: w.id || `w-${i}`,
+            id: w.id,
+            title: w.title,
+            type: w.type,
+            props: w.props,
+            sort_order: (i + 1) * 10,
+          }))
     ),
+    dashboards,
     module_flags: { ...config.modules } as Record<string, boolean>,
     apis: { ...(config.apis || {}) },
     capabilities: {},
@@ -336,7 +340,9 @@ export async function fetchMobileBootstrap(): Promise<FetchBootstrapResult> {
 
   try {
     const response = await http.get<unknown>(
-      ERP_ANALYSIS.config.getMobileBootstrap
+      ERP_ANALYSIS.config.getMobileBootstrap,
+      undefined,
+      { silentError: true }
     );
     const payload = unwrapMessage<Partial<MobileBootstrap>>(response);
     const normalized = payload ? normalizeBootstrap(payload) : null;

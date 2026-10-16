@@ -120,8 +120,27 @@ export function isNavModuleVisible(
 /** Resolve local route for a module key — never trust server paths */
 export function getModuleRoute(key: string): string | null {
   const entry = resolveModuleEntry(key);
-  if (!entry || entry.shipped === false) return null;
-  return entry.route;
+  if (entry) {
+    if (entry.shipped === false) return null;
+    return entry.route;
+  }
+  // Unknown business keys open as Access Profile boards (Desk-owned)
+  const id = String(key || "").trim();
+  if (!id || id.startsWith("/")) return null;
+  // Prefer overview / dash board ids when callers still use legacy keys
+  const aliases: Record<string, string> = {
+    sales: "sales_overview",
+    receivables: "receivables_overview",
+    inventory: "inventory_overview",
+    collection: "collection_overview",
+    executive: "executive_overview",
+    sales_performance: "sales_dash_performance",
+    sales_orders: "sales_order_book",
+    profitability: "sales_dash_profitability",
+    exceptions: "sales_attention",
+  };
+  const boardId = aliases[id.toLowerCase()] || id;
+  return `/dashboard-board/${encodeURIComponent(boardId)}`;
 }
 
 export function getModuleLabel(

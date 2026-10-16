@@ -10,6 +10,7 @@ import type { MobileWidgetConfig } from "../types/bootstrap";
 import {
   fetchDashboardWidgetData,
   resolveWidgetDrillPath,
+  resolveWidgetResponseDimension,
   type DrillFilters,
   type DrillStackEntry,
   type DashboardWidgetDataResponse,
@@ -174,7 +175,10 @@ export function useWidgetDrill(widget: MobileWidgetConfig, options: Options) {
     gcTime: 10 * 60_000,
     // Keep prior chart visible while the next drill level loads
     placeholderData: keepPreviousData,
-    retry: 1,
+    retry: (count, err) => {
+      if ((err as any)?.response?.status === 403) return false;
+      return count < 1;
+    },
     enabled: singleEnabled,
   });
 
@@ -235,20 +239,21 @@ export function useWidgetDrill(widget: MobileWidgetConfig, options: Options) {
       ).trim();
       if (!value || value === "_other") return;
 
-      const activeDim = activeDimension;
+      const filterDim =
+        resolveWidgetResponseDimension(data) || activeDimension;
       const nextFilters: DrillFilters = {
         ...filters,
-        [activeDim]: [value],
+        [filterDim]: [value],
       };
 
       setStack((s) => [
         ...s,
-        { dimension: activeDim, label: point.label, value },
+        { dimension: filterDim, label: point.label, value },
       ]);
       setFilters(nextFilters);
       setDimensionOverride(nextDimension);
     },
-    [drillable, nextDimension, activeDimension, filters]
+    [drillable, nextDimension, activeDimension, filters, data]
   );
 
   const goBack = useCallback(() => {

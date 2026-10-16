@@ -95,6 +95,12 @@ export class HttpClient {
     return `${b}${u.startsWith("/") ? u : `/${u}`}`;
   }
 
+  private isSilentRequest(config?: AxiosRequestConfig): boolean {
+    return Boolean(
+      (config as { silentError?: boolean } | undefined)?.silentError
+    );
+  }
+
   private setupInterceptors() {
     // Request interceptor - add auth token
     this.client.interceptors.request.use(
@@ -142,7 +148,7 @@ export class HttpClient {
             );
             return Promise.reject(
               new Error(
-                "No server URL configured. Open Settings → Configure Server and save https://www.printechs.com"
+                "No server URL configured. Open Settings → Configure Server and save https://printechs.com"
               )
             );
           }
@@ -160,16 +166,14 @@ export class HttpClient {
               urlPath.includes("/api/resource/"));
 
           if (isProtectedEndpoint) {
-            // Get access token for protected endpoints
-            const accessToken = await storage.getToken();
-
+            const accessToken = await oauthApi.getValidToken();
             if (accessToken) {
               config.headers = config.headers || {};
               config.headers.Authorization = `Bearer ${accessToken}`;
-              logger.info("🔑 Adding access token to protected endpoint");
             } else {
-              logger.info(
-                "⚠️ No access token available for protected endpoint"
+              logger.debug(
+                "No access token for protected endpoint",
+                urlPath
               );
             }
           } else if (isOAuthOrPublic) {
@@ -180,8 +184,7 @@ export class HttpClient {
             }
             logger.info("🌐 Making unauthenticated request for OAuth/public endpoint");
           } else {
-            // Other relative paths — still attach token if we have one
-            const accessToken = await storage.getToken();
+            const accessToken = await oauthApi.getValidToken();
             if (accessToken) {
               config.headers = config.headers || {};
               config.headers.Authorization = `Bearer ${accessToken}`;
@@ -224,6 +227,7 @@ export class HttpClient {
       async (error: AxiosError) => {
         const url = error.config?.url || "";
         const status = error.response?.status;
+        const silent = this.isSilentRequest(error.config);
 
         // Silently handle expected 403 errors on non-whitelisted ERPNext methods
         const responseData = error.response?.data as any;
@@ -256,9 +260,13 @@ export class HttpClient {
           (url.includes("get_executive_dashboard") ||
             url.includes("erp_analysis.executive") ||
             url.includes("erp_analysis.sales_kpis") ||
+            url.includes("erp_analysis.profitability") ||
+            url.includes("get_profitability_dashboard") ||
             url.includes("erp_analysis.customer") ||
             url.includes("search_customers") ||
-            url.includes("get_customer_360"));
+            url.includes("get_customer_360") ||
+            url.includes("get_product_performance") ||
+            url.includes("get_salesperson_performance"));
 
         const isExpected403 =
           status === 403 &&
@@ -282,7 +290,7 @@ export class HttpClient {
           (status === 417 && url.includes("store_push_token")) ||
           isMissingMethod417;
 
-        if (!isExpected403 && !isSoft417) {
+        if (!isExpected403 && !isSoft417 && !silent) {
           const fullUrl = this.resolveFullUrl(
             url,
             error.config?.baseURL || this.client.defaults.baseURL
@@ -402,7 +410,9 @@ export class HttpClient {
             error.code === "ECONNABORTED" ||
             error.message?.toLowerCase().includes("timeout");
           if (isTimeout) {
-            logger.error("🌐 Request timed out:", fullUrl);
+            if (!silent) {
+              logger.error("🌐 Request timed out:", fullUrl);
+            }
             return Promise.reject(
               new Error(
                 "Request timed out. The server took too long to respond."
@@ -410,19 +420,23 @@ export class HttpClient {
             );
           }
           if (isNetworkOrTlsError(error)) {
-            logger.error("🌐 Network/TLS error — no response:", fullUrl);
+            if (!silent) {
+              logger.warn("🌐 Network/TLS error — no response:", fullUrl);
+            }
             const hostHint =
               resolveServerBaseUrl(base) ||
               (/^https?:\/\//i.test(url) ? url : base);
             return Promise.reject(
               new Error(
                 hostHint
-                  ? `Unable to connect to ${hostHint}. Check the server URL (use https://www.printechs.com for live) and your network.`
+                  ? `Unable to connect to ${hostHint}. Check the server URL (use https://printechs.com for live) and your network.`
                   : "Network error: Unable to connect to server. Configure a server URL in Settings."
               )
             );
           }
-          logger.error("🌐 Network error - no response received:", fullUrl);
+          if (!silent) {
+            logger.warn("🌐 Network error - no response received:", fullUrl);
+          }
           return Promise.reject(
             new Error("Network error: Unable to connect to server")
           );
@@ -449,8 +463,9 @@ export class HttpClient {
       const { silentError, ...axiosConfig } = requestConfig || {};
       const response = await this.client.get(url, {
         ...axiosConfig,
+        silentError,
         ...(params !== undefined ? { params } : {}),
-      });
+      } as AxiosRequestConfig & { silentError?: boolean });
       return response.data;
     } catch (error) {
       try {
@@ -461,7 +476,9 @@ export class HttpClient {
         const silent = Boolean(
           (requestConfig as { silentError?: boolean } | undefined)?.silentError
         );
-        if (!softMissing && !silent) {
+        const ax = error as AxiosError;
+        const networkNoResponse = !ax.response && isNetworkOrTlsError(error);
+        if (!softMissing && !silent && !networkNoResponse) {
           logger.error("❌ GET request failed:", url, error);
         }
       } catch {}
@@ -469,12 +486,21 @@ export class HttpClient {
     }
   }
 
-  async post<T>(url: string, data?: any): Promise<T> {
+  async post<T>(
+    url: string,
+    data?: any,
+    requestConfig?: AxiosRequestConfig & { silentError?: boolean }
+  ): Promise<T> {
+    const silentError = Boolean(requestConfig?.silentError);
+    const { silentError: _silent, ...axiosConfig } = requestConfig || {};
     try {
       if (!url || typeof url !== "string") {
         throw new Error("Invalid URL provided to POST request");
       }
-      const response = await this.client.post(url, data);
+      const response = await this.client.post(url, data, {
+        ...axiosConfig,
+        silentError,
+      } as AxiosRequestConfig & { silentError?: boolean });
       return response.data;
     } catch (error) {
       try {
@@ -488,7 +514,20 @@ export class HttpClient {
             url.includes("store_push_token") &&
             ax.response?.status === 417;
           const softMissing = isMissingBaMethodError(error);
-          if (!quiet417Push && !softMissing) {
+          const permDenied = ax.response?.status === 403;
+          const networkNoResponse = !ax.response && isNetworkOrTlsError(error);
+          if (permDenied) {
+            logger.warn(
+              "⚠️ POST 403 (Access Profile):",
+              url,
+              (ax.response?.data as any)?.exception || ax.message
+            );
+          } else if (
+            !quiet417Push &&
+            !softMissing &&
+            !networkNoResponse &&
+            !silentError
+          ) {
             logger.error("❌ POST request failed:", url, error);
           }
         }

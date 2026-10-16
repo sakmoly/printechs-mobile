@@ -11,6 +11,7 @@ import { ERP_ANALYSIS } from "./endpoints";
 import { isApiEnabled } from "./mobileConfig";
 import {
   pickBaParams,
+  restoreTerritoryBaParams,
   isMissingBaMethodError,
   resolveCompanyName,
   markBaMethodMissing,
@@ -19,11 +20,32 @@ import {
 import { logger } from "../utils/logger";
 import { shouldUseMockData } from "./mock";
 import {
+  extractFrappeErrorMessage,
+  isBaPermissionDeniedError,
+} from "./baErrors";
+import {
   normalizeDashboardWidgetPayload,
   type DashboardWidgetDataResponse,
+  type DrillFilters,
 } from "./dashboardWidgetData";
+import {
+  getActiveSessionUserKey,
+  writeCachedBoard,
+  readCachedBoard,
+  boardPayloadHasWidgets,
+  boardPayloadLooksUseful,
+} from "./sessionCache";
+import { isNetworkOrTlsError } from "./serverUrl";
+import { baTerritoryRequestParams } from "../utils/dashboardTerritory";
 
 const METHOD = "get_dashboard_board_data";
+/** Batch board queries can be slow on live ERP — allow longer before failing. */
+const BOARD_BATCH_TIMEOUT_MS = 90_000;
+const BOARD_NETWORK_RETRIES = 2;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export type DashboardBoardDataRequest = {
   dashboard_id: string;
@@ -31,23 +53,35 @@ export type DashboardBoardDataRequest = {
   from_date?: string;
   to_date?: string;
   period?: string;
+  /** Logical dimension filters e.g. { territory: ["Jeddah"] } */
+  filters?: DrillFilters;
   /** Pull-to-refresh: bypass server cache */
   refresh?: 0 | 1 | boolean;
-};
-
-export type DashboardBoardDataResponse = {
-  dashboard_id: string;
-  widgets: Record<string, DashboardWidgetDataResponse>;
-  currency?: string;
-  meta?: Record<string, unknown>;
+  /** All Territories + allow_view_all_sales — request company-wide sales (not view_territories only) */
+  view_all_sales?: 0 | 1 | boolean;
+  /** Forward “Last Year” compare to BA (must apply to every widget in the batch). */
+  show_ly?: boolean;
 };
 
 export function dashboardBoardQueryKey(
   req: Pick<
     DashboardBoardDataRequest,
-    "dashboard_id" | "company" | "from_date" | "to_date" | "period"
+    | "dashboard_id"
+    | "company"
+    | "from_date"
+    | "to_date"
+    | "period"
+    | "filters"
+    | "view_all_sales"
+    | "show_ly"
   >
 ) {
+  const territory =
+    req.filters?.territory?.length === 1
+      ? String(req.filters.territory[0])
+      : req.filters?.territory?.length
+        ? [...req.filters.territory].sort().join(",")
+        : "";
   return [
     "dashboard-board-data",
     req.dashboard_id,
@@ -55,8 +89,18 @@ export function dashboardBoardQueryKey(
     req.from_date || "",
     req.to_date || "",
     req.period || "",
+    territory,
+    req.view_all_sales ? 1 : 0,
+    req.show_ly === false ? 0 : 1,
   ] as const;
 }
+
+export type DashboardBoardDataResponse = {
+  dashboard_id: string;
+  widgets: Record<string, DashboardWidgetDataResponse>;
+  currency?: string;
+  meta?: Record<string, unknown>;
+};
 
 /** Resolve widget payload when layout keys may have __n suffixes. */
 export function lookupBoardWidget(
@@ -114,6 +158,7 @@ function normalizeBoardPayload(
         from_date: req.from_date,
         to_date: req.to_date,
         period: req.period,
+        show_ly: req.show_ly !== false,
       });
     } catch (e) {
       if (__DEV__) {
@@ -160,6 +205,9 @@ export async function fetchDashboardBoardData(
     throw err;
   }
 
+  const territoryFilter = req.filters?.territory?.[0];
+  const territoryParams = baTerritoryRequestParams(req.filters);
+
   const rawParams = {
     dashboard_id: req.dashboard_id || "home",
     company,
@@ -167,31 +215,83 @@ export async function fetchDashboardBoardData(
     to_date: req.to_date,
     period: req.period,
     refresh: req.refresh ? 1 : undefined,
+    filters: req.filters ? JSON.stringify(req.filters) : undefined,
+    view_all_sales: req.view_all_sales ? 1 : undefined,
+    show_ly: req.show_ly === false ? 0 : req.show_ly ? 1 : undefined,
+    ...territoryParams,
   };
 
-  const params = pickBaParams(
+  const params = restoreTerritoryBaParams(
     rawParams,
-    ["dashboard_id", "company", "from_date", "to_date", "period", "refresh"],
-    cfg
+    pickBaParams(
+      rawParams,
+      [
+        "dashboard_id",
+        "company",
+        "from_date",
+        "to_date",
+        "period",
+        "refresh",
+        "filters",
+        "territory",
+        "territories",
+        "view_all_sales",
+        "show_ly",
+      ],
+      cfg
+    )
   );
 
-  const callBoardApi = async (p: Record<string, unknown>) => {
+  const callBoardApi = async (
+    p: Record<string, unknown>,
+    attempt = 0
+  ): Promise<unknown> => {
+    const reqConfig = {
+      timeout: BOARD_BATCH_TIMEOUT_MS,
+      // Cache/offline fallback handles failures — avoid red ERROR noise in console
+      silentError: true,
+    };
     try {
-      return await http.post<unknown>(ERP_ANALYSIS.config.getDashboardBoardData, p);
+      return await http.post<unknown>(
+        ERP_ANALYSIS.config.getDashboardBoardData,
+        p,
+        reqConfig
+      );
     } catch (postErr) {
       const st = (postErr as any)?.response?.status;
+      if (st === 401 || st === 403) {
+        throw postErr;
+      }
+      if (
+        isNetworkOrTlsError(postErr) &&
+        attempt < BOARD_NETWORK_RETRIES
+      ) {
+        await sleep(750 * (attempt + 1));
+        return callBoardApi(p, attempt + 1);
+      }
+      if (isNetworkOrTlsError(postErr)) {
+        try {
+          return await http.get<unknown>(
+            ERP_ANALYSIS.config.getDashboardBoardData,
+            p,
+            { silentError: true, timeout: BOARD_BATCH_TIMEOUT_MS }
+          );
+        } catch {
+          throw postErr;
+        }
+      }
       if (st === 500 || st === 404 || st === 417) {
         return await http.get<unknown>(
           ERP_ANALYSIS.config.getDashboardBoardData,
           p,
-          { silentError: true }
+          { silentError: true, timeout: BOARD_BATCH_TIMEOUT_MS }
         );
       }
       try {
         return await http.get<unknown>(
           ERP_ANALYSIS.config.getDashboardBoardData,
           p,
-          { silentError: true }
+          { silentError: true, timeout: BOARD_BATCH_TIMEOUT_MS }
         );
       } catch {
         throw postErr;
@@ -203,14 +303,98 @@ export async function fetchDashboardBoardData(
     const response = await callBoardApi(params);
     const normalized = normalizeBoardPayload(response, { ...req, company });
     if (__DEV__) {
+      const rawRoot = unwrapBoardMessage(response);
+      const rawWidgets = rawRoot?.widgets;
+      const rawKeys = Array.isArray(rawWidgets)
+        ? rawWidgets.map(
+            (w: any, i: number) =>
+              String(w?.widget_key || w?.key || `widget_${i}`)
+          )
+        : rawWidgets && typeof rawWidgets === "object"
+          ? Object.keys(rawWidgets)
+          : [];
       logger.debug("[board-data]", {
         dashboard_id: normalized.dashboard_id,
         keys: Object.keys(normalized.widgets),
+        raw_keys: rawKeys,
+        raw_error: rawRoot?.exc_type || rawRoot?.error || rawRoot?._error || null,
+        company: company || null,
+        period: req.period || null,
         refresh: Boolean(req.refresh),
+      });
+      if (!rawKeys.length) {
+        logger.warn(
+          `[board-data] empty widgets for "${req.dashboard_id}" — check Mobile App Profile / data sources on server`
+        );
+      }
+    }
+    const userKey = getActiveSessionUserKey();
+    if (userKey && Object.keys(normalized.widgets || {}).length > 0) {
+      void writeCachedBoard({
+        userKey,
+        dashboardId: normalized.dashboard_id || req.dashboard_id || "home",
+        company,
+        from_date: req.from_date,
+        to_date: req.to_date,
+        period: req.period,
+        territory: territoryFilter ? String(territoryFilter) : undefined,
+        data: normalized,
       });
     }
     return normalized;
   } catch (error) {
+    if (isBaPermissionDeniedError(error)) {
+      const msg =
+        extractFrappeErrorMessage(error) ||
+        "This board is not enabled for your mobile profile";
+      logger.warn(`[board-data] ${req.dashboard_id}: ${msg}`);
+      return {
+        dashboard_id: req.dashboard_id || "home",
+        widgets: {},
+        meta: { permission_denied: true, error: msg },
+      };
+    }
+    if (isNetworkOrTlsError(error)) {
+      const userKey = getActiveSessionUserKey();
+      if (userKey && company) {
+        const cached = await readCachedBoard({
+          userKey,
+          dashboardId: req.dashboard_id || "home",
+          company,
+          from_date: req.from_date,
+          to_date: req.to_date,
+          period: req.period,
+          territory: territoryFilter ? String(territoryFilter) : undefined,
+        });
+        if (cached && boardPayloadHasWidgets(cached.data)) {
+          logger.info(
+            `[board-data] ${req.dashboard_id}: offline — using cached board (${Object.keys(cached.data.widgets || {}).length} widgets)`
+          );
+          return {
+            ...cached.data,
+            meta: {
+              ...(cached.data.meta || {}),
+              from_cache: true,
+              network_error: true,
+            },
+          };
+        }
+      }
+      logger.warn(
+        `[board-data] ${req.dashboard_id}: network unavailable — no cached board`
+      );
+      return {
+        dashboard_id: req.dashboard_id || "home",
+        widgets: {},
+        meta: {
+          network_error: true,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Network error loading dashboard batch",
+        },
+      };
+    }
     if (isMissingBaMethodError(error)) {
       markBaMethodMissing(METHOD);
       logger.info(

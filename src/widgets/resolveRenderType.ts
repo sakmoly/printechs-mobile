@@ -1,4 +1,4 @@
-import type { WidgetType } from "./types";
+import type { WidgetTypeId } from "./types";
 
 const CHART_TYPES = new Set(["PIE", "DONUT", "BAR", "LINE"]);
 const TABLE_TYPES = new Set(["TABLE", "LIST", "CARD", "RANKING"]);
@@ -10,7 +10,7 @@ function normalizeTypeToken(raw: unknown): string {
     .replace(/[\s-]+/g, "_");
 }
 
-function mapHintToWidgetType(hint: string): WidgetType | null {
+function mapHintToWidgetType(hint: string): WidgetTypeId | null {
   const h = normalizeTypeToken(hint);
   if (!h) return null;
   if (h === "DONUT" || h.includes("DONUT")) return "DONUT";
@@ -80,7 +80,7 @@ export type ResolveRenderTypeInput = {
  */
 export function resolveEffectiveWidgetType(
   input: ResolveRenderTypeInput
-): WidgetType {
+): WidgetTypeId {
   const depth = Math.max(0, Number(input.drillDepth) || 0);
   const fromDrill = mapHintToWidgetType(
     lookupDrillView(input.drillViews, depth) || ""
@@ -89,7 +89,7 @@ export function resolveEffectiveWidgetType(
   const fromPayload = mapHintToWidgetType(input.payloadType || "");
   const fromBootstrap = mapHintToWidgetType(input.bootstrapType || "");
 
-  let preferred: WidgetType =
+  let preferred: WidgetTypeId =
     fromDrill ||
     fromHint ||
     fromPayload ||

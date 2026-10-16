@@ -46,6 +46,155 @@ const HIDE_FROM_HUB_KEYS = new Set([
   "settings",
 ]);
 
+/** Legacy module flags → overview board when bootstrap.modules is incomplete. */
+const CONFIG_FLAG_BOARDS: {
+  flag: string;
+  boardKey: string;
+  label: string;
+  section: string;
+  hubFeatureId: string;
+}[] = [
+  {
+    flag: "sales",
+    boardKey: "sales_overview",
+    label: "Sales Overview",
+    section: "sales",
+    hubFeatureId: "sales",
+  },
+  {
+    flag: "receivables",
+    boardKey: "receivables_overview",
+    label: "Receivables",
+    section: "finance",
+    hubFeatureId: "receivables",
+  },
+  {
+    flag: "inventory",
+    boardKey: "inventory_overview",
+    label: "Inventory",
+    section: "operations",
+    hubFeatureId: "inventory",
+  },
+  {
+    flag: "collection",
+    boardKey: "collection_overview",
+    label: "Collection",
+    section: "finance",
+    hubFeatureId: "collection",
+  },
+  {
+    flag: "payables",
+    boardKey: "payables_overview",
+    label: "Payables",
+    section: "finance",
+    hubFeatureId: "payables",
+  },
+  {
+    flag: "purchase",
+    boardKey: "purchase_overview",
+    label: "Purchase",
+    section: "operations",
+    hubFeatureId: "purchase",
+  },
+  {
+    flag: "executive",
+    boardKey: "executive_overview",
+    label: "Executive",
+    section: "insights",
+    hubFeatureId: "dashboard",
+  },
+];
+
+function sectionForBoardKey(key: string): string {
+  const k = String(key || "").toLowerCase();
+  if (k.startsWith("sales")) return "sales";
+  if (k.startsWith("receivable") || k.startsWith("collection")) return "finance";
+  if (k.startsWith("inventory") || k.startsWith("purchase")) return "operations";
+  if (k.startsWith("payable")) return "finance";
+  return SECTION_FALLBACK;
+}
+
+function moduleKeysPresent(bootstrap: MobileBootstrap): Set<string> {
+  const keys = new Set<string>();
+  for (const m of bootstrap.modules) {
+    keys.add(String(m.key || "").toLowerCase());
+    keys.add(String(m.route_key || m.key || "").toLowerCase());
+  }
+  return keys;
+}
+
+/**
+ * Desk sometimes returns widgets/boards without matching modules[] rows
+ * (or bootstrap falls back to get_mobile_config). Merge missing dashboard
+ * modules so More always lists enabled BA boards.
+ */
+export function augmentBootstrapModulesForHub(
+  bootstrap: MobileBootstrap | null,
+  mobileConfig: MobileConfig,
+  permissions: MenuPermissionStateLike
+): MobileBootstrap | null {
+  if (!bootstrap) return null;
+
+  const present = moduleKeysPresent(bootstrap);
+  const hasKey = (key: string) => present.has(String(key || "").toLowerCase());
+
+  const extra: MobileModuleConfig[] = [];
+  let sort =
+    Math.max(0, ...bootstrap.modules.map((m) => m.sort_order ?? 0)) + 10;
+
+  const pushBoard = (
+    mod: MobileModuleConfig,
+    hubFeatureId?: string
+  ) => {
+    const key = String(mod.key || "").toLowerCase();
+    if (!key || hasKey(key)) return;
+    if (HIDE_FROM_HUB_KEYS.has(key)) return;
+    if (hubFeatureId && !canAccessHubFeature(permissions, hubFeatureId)) {
+      return;
+    }
+    extra.push(mod);
+    present.add(key);
+    present.add(String(mod.route_key || mod.key).toLowerCase());
+    sort += 10;
+  };
+
+  for (const board of bootstrap.dashboards || []) {
+    const key = String(board.key || "").trim();
+    if (!key) continue;
+    pushBoard({
+      key,
+      route_key: key,
+      label: String(board.title || key.replace(/_/g, " ")),
+      enabled: true,
+      screen_type: "dashboard",
+      sort_order: sort,
+      section: sectionForBoardKey(key),
+      config: { dashboard_id: key },
+    });
+  }
+
+  for (const spec of CONFIG_FLAG_BOARDS) {
+    if (!isModuleEnabled(mobileConfig, spec.flag as keyof import("../api/mobileConfig").MobileModules)) continue;
+    if (hasKey(spec.boardKey) || hasKey(spec.flag)) continue;
+    pushBoard(
+      {
+        key: spec.boardKey,
+        route_key: spec.boardKey,
+        label: spec.label,
+        enabled: true,
+        screen_type: "dashboard",
+        sort_order: sort,
+        section: spec.section,
+        config: { dashboard_id: spec.boardKey },
+      },
+      spec.hubFeatureId
+    );
+  }
+
+  if (!extra.length) return bootstrap;
+  return { ...bootstrap, modules: [...bootstrap.modules, ...extra] };
+}
+
 function sortModules(mods: MobileModuleConfig[]): MobileModuleConfig[] {
   return [...mods].sort(
     (a, b) => (a.sort_order ?? 999) - (b.sort_order ?? 999)
@@ -259,25 +408,22 @@ function resolveDynamicHubItems(opts: {
       continue;
     }
 
-    // screen_type: module (default) — registry + AO
+    // screen_type: module — built-in tools (Customer 360, …) or backend board by key
     if (!entry) {
-      if (opts.showUpdateRequired) {
-        items.push({
-          id: `unknown-${mod.key}`,
-          key: mod.key,
-          title: mod.label || mod.key,
-          subtitle: "App update required",
-          icon: "download-outline",
-          color: "#94a3b8",
-          route: "",
-          section,
-          sectionLabel,
-          hubFeatureId: mod.key,
-          screenType: "module",
-          config: mod.config,
-          updateRequired: true,
-        });
-      }
+      items.push({
+        id: `dash-${mod.key}`,
+        key: mod.key,
+        title: mod.label || mod.key,
+        subtitle: mod.subtitle || "",
+        icon: resolveBootstrapIcon(mod.icon_key, "grid-outline"),
+        color: colorForModuleKey(mod.key),
+        route: dashboardRouteFor(mod),
+        section,
+        sectionLabel,
+        hubFeatureId: mod.key,
+        screenType: "dashboard",
+        config: mod.config,
+      });
       continue;
     }
 
@@ -346,23 +492,21 @@ function resolveLegacyHubItems(opts: {
         resolveModuleEntry(mod.route_key) || resolveModuleEntry(mod.key);
 
       if (!entry) {
-        if (opts.showUpdateRequired) {
-          items.push({
-            id: `unknown-${mod.key}`,
-            key: mod.key,
-            title: mod.label || mod.key,
-            subtitle: "App update required",
-            icon: "download-outline",
-            color: "#94a3b8",
-            route: "",
-            section:
-              (mod.section as ModuleRegistryEntry["section"]) || SECTION_FALLBACK,
-            sectionLabel: sectionLabelFor(mod, mod.section || SECTION_FALLBACK),
-            hubFeatureId: mod.key,
-            screenType: "module",
-            updateRequired: true,
-          });
-        }
+        const section = mod.section || SECTION_FALLBACK;
+        items.push({
+          id: `dash-${mod.key}`,
+          key: mod.key,
+          title: mod.label || mod.key,
+          subtitle: mod.subtitle || "",
+          icon: resolveBootstrapIcon(mod.icon_key, "grid-outline"),
+          color: colorForModuleKey(mod.key),
+          route: dashboardRouteFor(mod),
+          section,
+          sectionLabel: sectionLabelFor(mod, section),
+          hubFeatureId: mod.key,
+          screenType: "dashboard",
+          config: mod.config,
+        });
         continue;
       }
 
@@ -418,20 +562,354 @@ export function resolveVisibleHubItems(opts: {
     showUpdateRequired = false,
   } = opts;
 
-  if (supportsDynamicModules(bootstrap) && bootstrap?.modules?.length) {
-    return resolveDynamicHubItems({
-      bootstrap,
-      mobileConfig,
-      permissions,
-      showUpdateRequired,
+  const mergedBootstrap = augmentBootstrapModulesForHub(
+    bootstrap,
+    mobileConfig,
+    permissions
+  );
+
+  const raw =
+    supportsDynamicModules(mergedBootstrap) && mergedBootstrap?.modules?.length
+      ? resolveDynamicHubItems({
+          bootstrap: mergedBootstrap,
+          mobileConfig,
+          permissions,
+          showUpdateRequired,
+        })
+      : resolveLegacyHubItems({
+          bootstrap: mergedBootstrap,
+          mobileConfig,
+          permissions,
+          showUpdateRequired,
+        });
+
+  return dedupeHubItems(raw);
+}
+
+/**
+ * Legacy module key → preferred Access Profile board when both are enabled.
+ */
+const HUB_KEY_ALIASES: Record<string, string> = {
+  sales: "sales_overview",
+  receivables: "receivables_overview",
+  inventory: "inventory_overview",
+  collection: "collection_overview",
+  executive: "executive_overview",
+  sales_performance: "sales_dash_performance",
+  sales_orders: "sales_order_book",
+  profitability: "sales_dash_profitability",
+  exceptions: "sales_attention",
+};
+
+/** Tab / child boards — kept for More family chips (not top-level duplicates of overview). */
+const SALES_NESTED_BOARD_KEYS = new Set([
+  "sales_trend",
+  "sales_trends",
+  "sales_dash_performance",
+  "sales_customer",
+  "sales_product",
+  "sales_order_book",
+  "sales_dash_profitability",
+  "sales_attention",
+  "sales_performance",
+  "sales_orders",
+]);
+
+const HUB_NOISE_KEYS = new Set([
+  "push",
+  "executive",
+  "executive_overview",
+]);
+
+function normalizeHubTitle(title: string): string {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function hubPreferenceScore(item: ResolvedHubItem): number {
+  const k = String(item.key || "").toLowerCase();
+  let score = 0;
+  if (/_overview$/.test(k)) score += 100;
+  if (/_dash_/.test(k) || /_order_book$/.test(k)) score += 40;
+  if (item.screenType === "dashboard") score += 20;
+  if (item.screenType === "report_list") score += 15;
+  if (resolveModuleEntry(k)?.route?.startsWith("/customer")) score += 30;
+  if (resolveModuleEntry(k)?.route?.includes("generic-analysis")) score += 30;
+  return score;
+}
+
+/**
+ * Desk often ships legacy modules + matching boards.
+ * Drop true twins; keep sales child boards for grouped More chips.
+ */
+export function dedupeHubItems(items: ResolvedHubItem[]): ResolvedHubItem[] {
+  const byKey = new Map(
+    items.map((i) => [String(i.key || "").toLowerCase(), i] as const)
+  );
+
+  let filtered = items.filter((item) => {
+    const k = String(item.key || "").toLowerCase();
+    if (HUB_NOISE_KEYS.has(k)) return false;
+
+    // Prefer inventory_overview over inventory, etc.
+    if (byKey.has(`${k}_overview`)) return false;
+    const preferred = HUB_KEY_ALIASES[k];
+    if (preferred && byKey.has(preferred)) return false;
+
+    return true;
+  });
+
+  // Same visible title → keep the better board/tool (e.g. sales_performance twin)
+  const winnerByTitle = new Map<string, ResolvedHubItem>();
+  for (const item of filtered) {
+    const title = normalizeHubTitle(item.title);
+    if (!title) continue;
+    const prev = winnerByTitle.get(title);
+    if (!prev || hubPreferenceScore(item) > hubPreferenceScore(prev)) {
+      winnerByTitle.set(title, item);
+    }
+  }
+
+  filtered = filtered.filter((item) => {
+    const title = normalizeHubTitle(item.title);
+    if (!title) return true;
+    return winnerByTitle.get(title)?.key === item.key;
+  });
+
+  return filtered;
+}
+
+/** @deprecated use dedupeHubItems */
+export function dedupeOverviewHubItems(
+  items: ResolvedHubItem[]
+): ResolvedHubItem[] {
+  return dedupeHubItems(items);
+}
+
+export type MoreMenuFamily = {
+  id: string;
+  title: string;
+  subtitle: string;
+  icon: ModuleRegistryEntry["icon"];
+  color: string;
+  /** Primary board (usually Overview) — header tap */
+  primary: ResolvedHubItem;
+  /** Quick-select chips (Performance, Trends, SO, …) */
+  chips: ResolvedHubItem[];
+};
+
+type FamilyMeta = {
+  id: string;
+  title: string;
+  subtitle: string;
+  icon: ModuleRegistryEntry["icon"];
+  color: string;
+  order: number;
+};
+
+function familyMetaForKey(key: string): FamilyMeta {
+  const k = String(key || "").toLowerCase();
+  if (
+    k.startsWith("sales") ||
+    k === "customer_360" ||
+    k === "profitability"
+  ) {
+    return {
+      id: "sales",
+      title: "Sales",
+      subtitle: "Year-to-Date vs Last Year",
+      icon: "trending-up",
+      color: "#667eea",
+      order: 10,
+    };
+  }
+  if (k.startsWith("receivable")) {
+    return {
+      id: "receivables",
+      title: "Receivables",
+      subtitle: "Aging & collections",
+      icon: "wallet",
+      color: "#0ea5e9",
+      order: 20,
+    };
+  }
+  if (k.startsWith("collection")) {
+    return {
+      id: "collection",
+      title: "Collection",
+      subtitle: "Cash & attention",
+      icon: "cash",
+      color: "#0284c7",
+      order: 30,
+    };
+  }
+  if (k.startsWith("inventory")) {
+    return {
+      id: "inventory",
+      title: "Inventory",
+      subtitle: "Stock & health",
+      icon: "layers",
+      color: "#10b981",
+      order: 40,
+    };
+  }
+  if (k.startsWith("payable")) {
+    return {
+      id: "payables",
+      title: "Payables",
+      subtitle: "AP & payment plan",
+      icon: "card",
+      color: "#ef4444",
+      order: 50,
+    };
+  }
+  if (k.startsWith("purchase")) {
+    return {
+      id: "purchase",
+      title: "Purchase",
+      subtitle: "PO performance",
+      icon: "cart",
+      color: "#f97316",
+      order: 60,
+    };
+  }
+  if (k.startsWith("exception") || k === "sales_attention") {
+    return {
+      id: "exceptions",
+      title: "Exceptions",
+      subtitle: "Management alerts",
+      icon: "warning",
+      color: "#ea580c",
+      order: 70,
+    };
+  }
+  if (k.includes("approval")) {
+    return {
+      id: "approvals_analytics",
+      title: "Approvals",
+      subtitle: "Cycle time & SLA",
+      icon: "stats-chart",
+      color: "#6366f1",
+      order: 80,
+    };
+  }
+  return {
+    id: "tools",
+    title: "Tools",
+    subtitle: "Reports & utilities",
+    icon: "grid-outline",
+    color: "#64748b",
+    order: 90,
+  };
+}
+
+function chipSortRank(key: string): number {
+  const k = key.toLowerCase();
+  if (/overview/.test(k)) return 1;
+  if (/performance/.test(k)) return 2;
+  if (/trend/.test(k)) return 3;
+  if (/customer/.test(k) && !/360/.test(k)) return 4;
+  if (/product/.test(k)) return 5;
+  if (/order/.test(k)) return 6;
+  if (/profit/.test(k)) return 7;
+  if (/attention|exception/.test(k)) return 8;
+  if (/360/.test(k)) return 9;
+  return 50;
+}
+
+/** Short pill label matching Sales Dashboard chrome (Overview / Performance / SO). */
+export function shortHubChipLabel(item: ResolvedHubItem): string {
+  const k = String(item.key || "").toLowerCase();
+  if (/overview/.test(k)) return "Overview";
+  if (/performance/.test(k)) return "Performance";
+  if (/trend/.test(k)) return "Trends";
+  if (/order/.test(k)) return "SO";
+  if (/product/.test(k)) return "Products";
+  if (/customer/.test(k) && !/360/.test(k)) return "Customers";
+  if (/360/.test(k)) return "Cust. 360";
+  if (/profit/.test(k)) return "Profit";
+  if (/attention/.test(k)) return "Alerts";
+  if (/exception/.test(k)) return "Alerts";
+  if (/receivable/.test(k)) return "AR";
+  if (/collection/.test(k)) return "Collection";
+  if (/inventory/.test(k)) return "Stock";
+  if (/payable/.test(k)) return "AP";
+  if (/purchase/.test(k)) return "Purchase";
+  const words = String(item.title || "")
+    .trim()
+    .split(/\s+/);
+  if (words.length <= 2) return item.title;
+  return words.slice(0, 2).join(" ");
+}
+
+function chipIconFor(item: ResolvedHubItem): ModuleRegistryEntry["icon"] {
+  const k = String(item.key || "").toLowerCase();
+  if (/overview/.test(k)) return "pie-chart";
+  if (/performance/.test(k)) return "bar-chart";
+  if (/trend/.test(k)) return "trending-up";
+  if (/order/.test(k)) return "clipboard";
+  if (/product/.test(k)) return "cube-outline";
+  if (/customer|360/.test(k)) return "people-outline";
+  if (/profit/.test(k)) return "pie-chart-outline";
+  if (/attention|exception/.test(k)) return "warning-outline";
+  if (/inventory/.test(k)) return "layers-outline";
+  if (/collection/.test(k)) return "cash-outline";
+  if (/receivable/.test(k)) return "wallet-outline";
+  return item.icon;
+}
+
+/**
+ * Group More tiles into Sales / Inventory / Collection style family cards
+ * with Overview-style chips (Sales Dashboard chrome).
+ */
+export function groupHubItemsByFamily(
+  items: ResolvedHubItem[]
+): MoreMenuFamily[] {
+  const buckets = new Map<string, { meta: FamilyMeta; items: ResolvedHubItem[] }>();
+
+  for (const item of items) {
+    const meta = familyMetaForKey(item.key);
+    let bucket = buckets.get(meta.id);
+    if (!bucket) {
+      bucket = { meta, items: [] };
+      buckets.set(meta.id, bucket);
+    }
+    bucket.items.push(item);
+  }
+
+  const families: MoreMenuFamily[] = [];
+  for (const { meta, items: members } of buckets.values()) {
+    const sorted = [...members].sort(
+      (a, b) => chipSortRank(a.key) - chipSortRank(b.key)
+    );
+    const primary =
+      sorted.find((m) => /overview/i.test(m.key)) ||
+      sorted.find((m) => !SALES_NESTED_BOARD_KEYS.has(m.key.toLowerCase())) ||
+      sorted[0];
+    if (!primary) continue;
+
+    // Chips = all members (including primary as first Overview chip)
+    const chips = sorted.map((m) => ({
+      ...m,
+      icon: chipIconFor(m),
+    }));
+
+    families.push({
+      id: meta.id,
+      title: meta.title,
+      subtitle: meta.subtitle,
+      icon: meta.icon,
+      color: meta.color,
+      primary,
+      chips,
     });
   }
 
-  return resolveLegacyHubItems({
-    bootstrap,
-    mobileConfig,
-    permissions,
-    showUpdateRequired,
+  return families.sort((a, b) => {
+    const ao = familyMetaForKey(a.primary.key).order;
+    const bo = familyMetaForKey(b.primary.key).order;
+    return ao - bo;
   });
 }
 

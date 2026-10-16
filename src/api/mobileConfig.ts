@@ -294,7 +294,7 @@ export async function checkErpAnalysisHealth(baseUrl: string): Promise<{
       return {
         ok: false,
         message:
-          `Cannot reach ${trimmed} (network/SSL). For Printechs live use https://www.printechs.com — not erp.printechs.com.`,
+          `Cannot reach ${trimmed} (network/SSL). For Printechs live use https://printechs.com (erp.printechs.com is remapped automatically).`,
       };
     }
     return {

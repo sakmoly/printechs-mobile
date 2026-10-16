@@ -7,7 +7,7 @@
  * get_dashboard_widget_data.
  */
 
-import React, { useEffect, useMemo, useImperativeHandle } from "react";
+import React, { useMemo, useImperativeHandle } from "react";
 import { View, Text, StyleSheet } from "react-native";
 import { router } from "expo-router";
 import { useBootstrapStore } from "../store/bootstrap";
@@ -24,7 +24,6 @@ import {
 } from "../types/bootstrap";
 import { Fonts, Type } from "../theme/typography";
 import {
-  detectWidgetPeriodPreset,
   resolveWidgetDateRange,
 } from "../utils/period";
 import { normalizeWidgetType } from "./types";
@@ -80,7 +79,10 @@ function SingleWidgetHost({
   compact,
   batchPayload,
   boardLoading,
+  boardSettled,
   usePerWidgetFallback,
+  hideTitle,
+  fillRowCell,
 }: {
   widget: MobileWidgetConfig;
   company?: string;
@@ -91,7 +93,13 @@ function SingleWidgetHost({
   compact?: boolean;
   batchPayload?: DashboardWidgetDataResponse | null;
   boardLoading?: boolean;
+  /** Board batch finished (even if widgets map is empty / missing this key). */
+  boardSettled?: boolean;
   usePerWidgetFallback?: boolean;
+  /** Hide widget title when it duplicates the section above */
+  hideTitle?: boolean;
+  /** Own the flex cell so empty widgets don't leave a blank column */
+  fillRowCell?: boolean;
 }) {
   const normalizedType = normalizeWidgetType(widget.type);
   const isHeader = normalizedType === "HEADER";
@@ -104,11 +112,6 @@ function SingleWidgetHost({
       return null;
     }
   }
-  const fixedPreset = useMemo(
-    () => detectWidgetPeriodPreset(widget),
-    [widget]
-  );
-  // Desk/label period (e.g. "Net Sales MTD") wins; others follow home filter
   const range = useMemo(
     () =>
       resolveWidgetDateRange(widget, {
@@ -119,28 +122,6 @@ function SingleWidgetHost({
     [widget, from_date, to_date, period]
   );
 
-  useEffect(() => {
-    if (!__DEV__ || skipData) return;
-    console.log("[widget-period]", {
-      key: widget.key,
-      label: widget.label,
-      homePeriod: period,
-      resolved: range.preset,
-      from: range.from_date,
-      to: range.to_date,
-      fixedByWidget: fixedPreset,
-    });
-  }, [
-    skipData,
-    widget.key,
-    widget.label,
-    period,
-    range.preset,
-    range.from_date,
-    range.to_date,
-    fixedPreset,
-  ]);
-
   const mergedConfig = useMemo(() => {
     const base = { ...(widget.config || {}) };
     const fromBatch = batchPayload?.config;
@@ -150,10 +131,12 @@ function SingleWidgetHost({
     return base;
   }, [widget.config, batchPayload?.config]);
 
-  // Missing key after a successful board → fall back to single-widget API
+  // Per-widget when batch is missing, denied, or returned no payload for this key.
   const perWidget =
-    Boolean(usePerWidgetFallback) ||
-    (!batchPayload && !boardLoading && !skipData);
+    !skipData &&
+    !batchPayload &&
+    !boardLoading &&
+    Boolean(usePerWidgetFallback);
 
   const {
     data,
@@ -228,7 +211,25 @@ function SingleWidgetHost({
   );
   const showLyUi = cfgHideLy ? false : Boolean(cfgShowLy || apiHasLy);
 
-  return (
+  // Avoid wrapping a null KPI in a flex cell (blank column pushes siblings right)
+  const kpiHasContent =
+    Boolean(data?.kpis?.length) ||
+    Boolean(data?.rows?.length) ||
+    (data?.chart?.summary?.value != null &&
+      Number.isFinite(Number(data.chart.summary.value))) ||
+    Boolean(showLyUi && data?.chart?.summary?.value_ly != null);
+  if (
+    fillRowCell &&
+    isKpiType(widget.type) &&
+    !boardLoading &&
+    !isLoading &&
+    !errMsg &&
+    !kpiHasContent
+  ) {
+    return null;
+  }
+
+  const body = (
     <WidgetRenderer
       widget={{
         ...widget,
@@ -290,8 +291,14 @@ function SingleWidgetHost({
       drillStack={stack}
       onDrillBack={stack.length > 0 ? goBack : undefined}
       compact={compact}
+      hideTitle={hideTitle}
     />
   );
+
+  if (fillRowCell) {
+    return <View style={styles.rowCell}>{body}</View>;
+  }
+  return body;
 }
 
 function applyWidgetLimit(
@@ -360,6 +367,71 @@ function isKpiType(type?: string | null): boolean {
   return /^kpi$/i.test(String(type || "").trim());
 }
 
+function normalizeSectionTitle(s: string): string {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function titlesMatch(a?: string | null, b?: string | null): boolean {
+  const aa = normalizeSectionTitle(a || "");
+  const bb = normalizeSectionTitle(b || "");
+  return Boolean(aa && bb && aa === bb);
+}
+
+/** Split wide Desk rows into pairs so KPI cards stay a clean 2-column grid. */
+function chunkWidgets<T>(items: T[], size = 2): T[][] {
+  if (items.length <= size) return [items];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
+/** True when batch payload can paint a KPI card (incl. chart.summary-only). */
+function kpiPayloadIsVisible(
+  payload: DashboardWidgetDataResponse | null | undefined
+): boolean {
+  if (!payload) return false;
+  if (payload.kpis?.length) return true;
+  if (payload.rows?.length) return true;
+  if (
+    payload.chart?.summary?.value != null &&
+    Number.isFinite(Number(payload.chart.summary.value))
+  ) {
+    return true;
+  }
+  if (payload.chart?.summary?.value_ly != null) return true;
+  return false;
+}
+
+/**
+ * Drop blank KPI / header slots before laying out a row.
+ * Prevents empty flex cells from shoving real cards to the right.
+ * Only removes widgets whose batch payload is present and empty — never
+ * drops a KPI just because the key is missing from the map.
+ */
+function widgetsForRowLayout(
+  widgets: MobileWidgetConfig[],
+  widgetMap: Record<string, DashboardWidgetDataResponse> | null | undefined,
+  boardLoading?: boolean
+): MobileWidgetConfig[] {
+  return widgets.filter((w) => {
+    const t = normalizeWidgetType(w.type);
+    if (t === "HEADER" || t === "LINK") {
+      const title = String(w.label || "").trim();
+      return Boolean(title) && !isPlaceholderWidgetKey(title);
+    }
+    if (!isKpiType(w.type)) return true;
+    if (boardLoading || !widgetMap) return true;
+    const payload = lookupBoardWidget(widgetMap, w.key);
+    // Missing key → keep (fallback / alias may still paint the card)
+    if (!payload) return true;
+    return kpiPayloadIsVisible(payload);
+  });
+}
+
 function WidgetRows({
   rows,
   company,
@@ -369,6 +441,7 @@ function WidgetRows({
   hideKpiShellTitle,
   widgetMap,
   boardLoading,
+  boardSettled,
   usePerWidgetFallback,
 }: {
   rows: MobileWidgetRow[];
@@ -380,12 +453,15 @@ function WidgetRows({
   hideKpiShellTitle?: boolean;
   widgetMap?: Record<string, DashboardWidgetDataResponse> | null;
   boardLoading?: boolean;
+  boardSettled?: boolean;
   usePerWidgetFallback?: boolean;
 }) {
+  let lastSectionTitle = "";
   return (
     <>
       {rows.map((row, idx) => {
         if (row.type === "section") {
+          lastSectionTitle = row.title || "";
           return (
             <Text
               key={`section-${idx}-${row.title}`}
@@ -396,30 +472,55 @@ function WidgetRows({
           );
         }
         if (row.type === "row") {
+          const layoutWidgets = widgetsForRowLayout(
+            row.widgets,
+            widgetMap,
+            boardLoading
+          );
+          if (!layoutWidgets.length) return null;
+          const chunks = chunkWidgets(layoutWidgets, 2);
           return (
-            <View
-              key={`row-${idx}-${row.widgets.map((w) => w.key).join("-")}`}
-              style={styles.row}
-            >
-              {row.widgets.map((w, wi) => (
-                <View key={`${w.key}-${idx}-${wi}`} style={styles.rowCell}>
-                  <SingleWidgetHost
-                    widget={w}
-                    company={company}
-                    from_date={from_date}
-                    to_date={to_date}
-                    period={period}
-                    compact
-                    batchPayload={lookupBoardWidget(widgetMap, w.key) ?? null}
-                    boardLoading={boardLoading}
-                    usePerWidgetFallback={usePerWidgetFallback}
-                  />
+            <React.Fragment key={`row-${idx}-${row.widgets.map((w) => w.key).join("-")}`}>
+              {chunks.map((chunk, ci) => (
+                <View
+                  key={`row-${idx}-${ci}-${chunk.map((w) => w.key).join("-")}`}
+                  style={styles.row}
+                >
+                  {chunk.map((w, wi) => (
+                    <SingleWidgetHost
+                      key={`${w.key}-${idx}-${ci}-${wi}`}
+                      widget={w}
+                      company={company}
+                      from_date={from_date}
+                      to_date={to_date}
+                      period={period}
+                      compact
+                      fillRowCell
+                      hideTitle={titlesMatch(
+                        w.label,
+                        lastSectionTitle ||
+                          String(w.config?.section_title || "")
+                      )}
+                      batchPayload={lookupBoardWidget(widgetMap, w.key) ?? null}
+                      boardLoading={boardLoading}
+                      boardSettled={boardSettled}
+                      usePerWidgetFallback={usePerWidgetFallback}
+                    />
+                  ))}
+                  {/* Keep 2-column alignment when a row has a single card */}
+                  {chunk.length === 1 ? (
+                    <View style={styles.rowCellSpacer} />
+                  ) : null}
                 </View>
               ))}
-            </View>
+            </React.Fragment>
           );
         }
         const w = row.widget;
+        const sectionDup = titlesMatch(
+          w.label,
+          lastSectionTitle || String(w.config?.section_title || "")
+        );
         return (
           <SingleWidgetHost
             key={`${w.key}-${idx}`}
@@ -429,8 +530,10 @@ function WidgetRows({
             to_date={to_date}
             period={period}
             compact={hideKpiShellTitle && isKpiType(w.type)}
+            hideTitle={sectionDup}
             batchPayload={lookupBoardWidget(widgetMap, w.key) ?? null}
             boardLoading={boardLoading}
+            boardSettled={boardSettled}
             usePerWidgetFallback={usePerWidgetFallback}
           />
         );
@@ -547,16 +650,6 @@ export function DashboardWidgets({
             return rowKeys.size > 0 ? !rowKeys.has(k) : !keys.has(k);
           })
       );
-      if (__DEV__) {
-        console.log("[home-widgets]", {
-          boardKey: resolvedBoardKey,
-          keys: widgets.map((w) => `${w.key}:${w.type}:${w.size || "-"}`),
-          keepRows: Boolean(matched?.widget_rows?.length && !rowsIncomplete),
-          batchKeys: boardQuery.widgets
-            ? Object.keys(boardQuery.widgets)
-            : [],
-        });
-      }
       return [
         {
           key: matched?.key || resolvedBoardKey,
@@ -619,10 +712,34 @@ export function DashboardWidgets({
   const hideKpiShellTitle =
     Boolean(boardKey) && String(boardKey).toLowerCase() !== "home";
 
+  const widgetCount = Object.keys(boardQuery.widgets || {}).length;
+  const boardDenied = Boolean(boardQuery.data?.meta?.permission_denied);
+  const boardFallback = Boolean(boardQuery.usePerWidgetFallback);
+  const boardEmpty =
+    !boardQuery.isLoading &&
+    boardQuery.data != null &&
+    widgetCount === 0 &&
+    !boardFallback;
+  // Per-widget fallback loads allowed widgets silently — no banner.
+  const boardNotice = boardFallback
+    ? null
+    : boardDenied
+      ? String(boardQuery.data?.meta?.error || "").trim() ||
+        "This board is not enabled for your mobile profile."
+      : boardEmpty
+        ? "No widget data from the server for this board yet."
+        : null;
+
   return (
     <View style={styles.wrap}>
       {showWidgetsTitle && title ? (
         <Text style={styles.title}>{title}</Text>
+      ) : null}
+      {boardNotice ? (
+        <View style={styles.boardNotice}>
+          <Text style={styles.boardNoticeTitle}>Waiting on server data</Text>
+          <Text style={styles.boardNoticeBody}>{boardNotice}</Text>
+        </View>
       ) : null}
       {boardsWithRows.map(({ board, rows }, bi) => (
         <View key={board.key || `board-${bi}`} style={styles.board}>
@@ -638,6 +755,11 @@ export function DashboardWidgets({
             hideKpiShellTitle={hideKpiShellTitle}
             widgetMap={boardQuery.widgets}
             boardLoading={boardQuery.isLoading}
+            boardSettled={
+              boardQuery.usePerWidgetFallback ||
+              (!boardQuery.isLoading &&
+                (boardQuery.data != null || boardQuery.isError))
+            }
             usePerWidgetFallback={boardQuery.usePerWidgetFallback}
           />
         </View>
@@ -679,10 +801,37 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "stretch",
     gap: 8,
-    marginBottom: 4,
+    marginBottom: 8,
+    width: "100%",
   },
   rowCell: {
     flex: 1,
+    flexBasis: 0,
     minWidth: 0,
+  },
+  rowCellSpacer: {
+    flex: 1,
+    flexBasis: 0,
+    minWidth: 0,
+  },
+  boardNotice: {
+    backgroundColor: "#fffbeb",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#fde68a",
+    padding: 12,
+    marginBottom: 12,
+  },
+  boardNoticeTitle: {
+    fontFamily: Fonts.bodySemi,
+    fontSize: 13,
+    color: "#92400e",
+    marginBottom: 4,
+  },
+  boardNoticeBody: {
+    fontFamily: Fonts.body,
+    fontSize: 12,
+    color: "#78350f",
+    lineHeight: 18,
   },
 });

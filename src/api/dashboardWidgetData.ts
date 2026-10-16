@@ -10,16 +10,94 @@ import { ERP_ANALYSIS } from "./endpoints";
 import { isApiEnabled } from "./mobileConfig";
 import {
   pickBaParams,
+  plainJsonClone,
+  restoreTerritoryBaParams,
   isMissingBaMethodError,
   resolveCompanyName,
   markBaMethodMissing,
   isBaMethodKnownMissing,
 } from "./apiResilience";
+import {
+  extractFrappeErrorMessage,
+  isBaPermissionDeniedError,
+} from "./baErrors";
 import { assertLogicalDimensionKey } from "../dimensions/logicalKeys";
 import { logger } from "../utils/logger";
 import { fetchGenericAnalysis } from "./genericAnalysis";
 import type { AnalysisKpi, AnalysisRow } from "./genericAnalysisTypes";
 import { shouldUseMockData } from "./mock";
+import { isNetworkOrTlsError } from "./serverUrl";
+import { baTerritoryRequestParams } from "../utils/dashboardTerritory";
+import {
+  inferKpiFormat,
+  isSalesTotalWidget,
+  isSalesTotalLyWidget,
+  normalizeWidgetKey,
+  pickWidgetKpiMetrics,
+  readFlatKpiFields,
+  resolveAnalysisKpiFormat,
+  sanitizeKpiDisplayValue,
+} from "../utils/kpiFormat";
+import {
+  isHealthWidgetKey,
+  normalizeHealthScoreValue,
+} from "../utils/healthScore";
+import {
+  getActiveSessionUserKey,
+  readCachedWidget,
+  writeCachedWidget,
+  widgetPayloadLooksUseful,
+} from "./sessionCache";
+
+function widgetCacheScope(req: DashboardWidgetDataRequest, company: string) {
+  return {
+    widget_key: req.widget_key,
+    company,
+    from_date: req.from_date,
+    to_date: req.to_date,
+    period: req.period,
+    territory: req.filters?.territory?.[0],
+    show_ly: req.show_ly !== false,
+  };
+}
+
+function deliverWidgetResponse(
+  req: DashboardWidgetDataRequest,
+  company: string | undefined,
+  payload: DashboardWidgetDataResponse
+): DashboardWidgetDataResponse {
+  const companyKey = String(company || req.company || "").trim();
+  const userKey = getActiveSessionUserKey();
+  const isDrill = Number(req.drill_depth ?? 0) > 0;
+  if (
+    userKey &&
+    companyKey &&
+    !isDrill &&
+    widgetPayloadLooksUseful(payload)
+  ) {
+    void writeCachedWidget({
+      userKey,
+      ...widgetCacheScope(req, companyKey),
+      data: payload,
+    });
+  }
+  return plainJsonClone(payload);
+}
+
+async function readCachedWidgetFallback(
+  req: DashboardWidgetDataRequest,
+  company: string | undefined
+): Promise<DashboardWidgetDataResponse | null> {
+  if (Number(req.drill_depth ?? 0) > 0) return null;
+  const companyKey = String(company || req.company || "").trim();
+  const userKey = getActiveSessionUserKey();
+  if (!userKey || !companyKey) return null;
+  const hit = await readCachedWidget({
+    userKey,
+    ...widgetCacheScope(req, companyKey),
+  });
+  return hit?.data ?? null;
+}
 
 export type DrillFilters = Record<string, string[]>;
 
@@ -66,11 +144,24 @@ export type WidgetChartMeta = {
   drill_path?: string[] | null;
   drill_depth?: number | null;
   next_dimension?: string | null;
+  /** Current breakdown level (e.g. sub_group at table depth when chart is empty) */
+  dimension?: string | null;
   drillable?: boolean;
   render_hint?: string;
   currency?: string;
   source?: "widget_data" | "generic" | "empty";
   ly_display?: LyDisplayMeta | null;
+  /** Desk / batch layout hints */
+  section_title?: string | null;
+  row_group?: string | null;
+  kpi_id?: string | null;
+  chart_key?: string | null;
+  compare?: string | null;
+  receivables_bucket_list_mode?:
+    | "drill"
+    | "api_bucket"
+    | "api_bucket_trusted"
+    | "client";
 };
 
 export type DashboardWidgetDataRequest = {
@@ -83,9 +174,13 @@ export type DashboardWidgetDataRequest = {
   dimension?: string;
   filters?: DrillFilters;
   drill_depth?: number;
+  /** JSON string: [{ dimension, value, label? }] — division drill on Sales By. */
+  drill_crumbs?: string;
   metric?: string;
   /** Forward Desk Show LY Comparison to BA */
   show_ly?: boolean;
+  /** All Territories + allow_view_all_sales */
+  view_all_sales?: 0 | 1 | boolean;
 };
 
 export type DashboardWidgetDataResponse = {
@@ -119,6 +214,8 @@ export type DashboardWidgetDataResponse = {
       align?: string;
     }[];
     rows: AnalysisRow[];
+    /** Level of rows when render_hint is table / drill depth > 0 */
+    dimension?: string;
     total?: number | null;
     currency_display?: {
       show_symbol?: boolean;
@@ -133,6 +230,36 @@ export type DashboardWidgetDataResponse = {
 };
 
 const METHOD = "get_dashboard_widget_data";
+
+/** Normalize BA dimension aliases for drill filters (Printechs item group → sub_group). */
+export function normalizeDrillDimensionKey(raw: string | null | undefined): string {
+  const d = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!d) return "";
+  if (d === "item_group" || d === "group") return "sub_group";
+  return d;
+}
+
+/**
+ * Active breakdown dimension on a widget response.
+ * BA: at table depth, prefer meta.dimension / table.dimension when chart.dimension is empty.
+ */
+export function resolveWidgetResponseDimension(
+  payload: DashboardWidgetDataResponse | null | undefined
+): string | undefined {
+  if (!payload) return undefined;
+  const metaDim = normalizeDrillDimensionKey(payload.meta?.dimension ?? undefined);
+  if (metaDim) return metaDim;
+  const tableDim = normalizeDrillDimensionKey(payload.table?.dimension);
+  if (tableDim) return tableDim;
+  const chartDim = normalizeDrillDimensionKey(payload.chart?.dimension);
+  if (chartDim) return chartDim;
+  return undefined;
+}
+
+/** One legacy LY dashboard call per company+period (not per widget). */
+const lyDashboardInflight = new Map<string, Promise<unknown>>();
 
 /** When BA sends YoY % but omits LY absolute, recover previous = value / (1 + pct/100). */
 export function inferPreviousFromChange(
@@ -288,6 +415,9 @@ function coerceRows(raw: unknown): AnalysisRow[] {
       const label = String(
         r.label ||
           r.name ||
+          r.salesperson_name ||
+          r.salesperson ||
+          r.sales_person ||
           r.dimension ||
           r.dimension_label ||
           r.territory ||
@@ -300,6 +430,7 @@ function coerceRows(raw: unknown): AnalysisRow[] {
       const value = Number(
         r.value ??
           r.metric ??
+          r.count ??
           r.total_sales ??
           r.sales ??
           r.amount ??
@@ -308,10 +439,96 @@ function coerceRows(raw: unknown): AnalysisRow[] {
           r.net_sales ??
           0
       );
+      const rowMeta: Record<string, unknown> = {};
+      if (r.severity != null) rowMeta.severity = String(r.severity);
+      if (r.key != null) rowMeta.itemKey = String(r.key);
+      if (r.days != null && Number.isFinite(Number(r.days))) {
+        rowMeta.days = Number(r.days);
+      }
+      if (r.days_overdue != null && Number.isFinite(Number(r.days_overdue))) {
+        rowMeta.days_overdue = Number(r.days_overdue);
+      }
+      if (r.days_until_due != null && Number.isFinite(Number(r.days_until_due))) {
+        rowMeta.days_until_due = Number(r.days_until_due);
+      }
+      if (r.rank != null && Number.isFinite(Number(r.rank))) {
+        rowMeta.rank = Number(r.rank);
+      }
+      if (r.drill_filter != null && typeof r.drill_filter === "object") {
+        rowMeta.drill_filter = r.drill_filter;
+      }
+      if (r.sub_group != null && String(r.sub_group).trim()) {
+        rowMeta.sub_group = String(r.sub_group).trim();
+      }
+      if (r.item_group != null && String(r.item_group).trim()) {
+        const ig = String(r.item_group).trim();
+        if (ig !== rowMeta.sub_group) rowMeta.item_group = ig;
+      }
+      if (
+        !rowMeta.sub_group &&
+        rowMeta.drill_filter &&
+        typeof rowMeta.drill_filter === "object"
+      ) {
+        const sg = (rowMeta.drill_filter as { sub_group?: unknown }).sub_group;
+        if (Array.isArray(sg) && sg[0] != null) {
+          rowMeta.sub_group = String(sg[0]).trim();
+        }
+      }
+      if (r.dimension_value != null && String(r.dimension_value).trim()) {
+        rowMeta.dimension_value = String(r.dimension_value).trim();
+      }
+      const openSoPassThrough = [
+        "sales_order",
+        "customer_name",
+        "customer",
+        "delivery_date",
+        "schedule_date",
+        "expected_delivery_date",
+        "pending_delivery_value",
+        "pending_amount",
+        "item_code",
+        "item_name",
+        "pending_qty",
+        "delivered_qty",
+        "qty",
+        "rate",
+        "uom",
+        "warehouse",
+        "delivery_status",
+        "per_delivered",
+      ] as const;
+      for (const key of openSoPassThrough) {
+        if (r[key] != null && r[key] !== "") {
+          rowMeta[key] = r[key];
+        }
+      }
+      if (r.meta && typeof r.meta === "object") {
+        Object.assign(rowMeta, r.meta as Record<string, unknown>);
+      }
+      const gpPctRaw =
+        r.gp_pct ??
+        r.margin_pct ??
+        r.margin_percentage ??
+        r.gross_profit_percent ??
+        r.gp_margin ??
+        r.gp_margin_pct;
+      if (gpPctRaw != null && Number.isFinite(Number(gpPctRaw))) {
+        const pct = Number(gpPctRaw);
+        if (pct > -95 && pct < 95) rowMeta.gp_pct = pct;
+      } else if (
+        r.gp != null &&
+        Number.isFinite(Number(r.gp)) &&
+        Number.isFinite(value) &&
+        value > 0
+      ) {
+        const pct = (Number(r.gp) / value) * 100;
+        if (pct > -95 && pct < 95) rowMeta.gp_pct = pct;
+      }
       return {
         id: String(
           r.dimension_value ||
             r.dimension ||
+            r.key ||
             r.id ||
             r.name ||
             label ||
@@ -319,6 +536,7 @@ function coerceRows(raw: unknown): AnalysisRow[] {
         ),
         label,
         value: Number.isFinite(value) ? value : 0,
+        meta: Object.keys(rowMeta).length ? rowMeta : undefined,
         previous:
           r.previous != null
             ? Number(r.previous)
@@ -355,6 +573,9 @@ function legacyDataToRows(data: any): AnalysisRow[] {
     data.rows,
     data.items,
     data.series,
+    data.by_salesperson,
+    data.salespersons,
+    data.sales_person,
     data.territory,
     data.by_territory,
     data.customers,
@@ -547,6 +768,13 @@ const COLUMN_KEY_ALIASES: Record<string, string[]> = {
   net_sales_ly: ["net_sales_ly", "metric_ly", "value_ly"],
   metric_ly: ["metric_ly", "net_sales_ly", "value_ly"],
   change_pct: ["change_pct", "growth_pct", "pct"],
+  gp_pct: [
+    "gp_pct",
+    "margin_pct",
+    "margin_percentage",
+    "gross_profit_percent",
+    "gp_margin",
+  ],
 };
 
 function columnKeysMatch(a: string, b: string): boolean {
@@ -625,12 +853,20 @@ export function normalizeDashboardWidgetPayload(
   let root = raw?.message ?? raw ?? {};
   // Batch KPI shape: { kpi: { value, value_ly, ... } }
   if (root.kpi && typeof root.kpi === "object" && !Array.isArray(root.kpis)) {
+    const kpiHints: Record<string, unknown> = {};
+    if (root.kpi.subtitle != null) kpiHints.subtitle = root.kpi.subtitle;
+    if (root.kpi.kpi_id != null) kpiHints.kpi_id = root.kpi.kpi_id;
+    if (root.kpi.format != null) kpiHints.format = root.kpi.format;
     root = {
       ...root,
       kpis: Array.isArray(root.kpis) ? root.kpis : [root.kpi],
       value: root.value ?? root.kpi.value,
       value_ly: root.value_ly ?? root.kpi.value_ly,
       change_pct: root.change_pct ?? root.kpi.change_pct,
+      config: {
+        ...(typeof root.config === "object" && root.config ? root.config : {}),
+        ...kpiHints,
+      },
     };
   }
   // Batch LINK shape: { action: { module_key | dashboard_id | ... } }
@@ -729,6 +965,8 @@ export function normalizeDashboardWidgetPayload(
     if (!rows.length) rows = legacyDataToRows(root.data);
   }
 
+  const metaIn = root.meta || {};
+
   const table =
     tableIn || tableRowsFromBlock.length || (tableLike && rows.length)
       ? {
@@ -736,10 +974,17 @@ export function normalizeDashboardWidgetPayload(
           rows: tableRowsFromBlock.length ? tableRowsFromBlock : rows,
           total: tableTotal,
           currency_display: tableCurrencyDisplay,
+          dimension: normalizeDrillDimensionKey(
+            String(
+              tableIn?.dimension ??
+                metaIn.dimension ??
+                chart?.dimension ??
+                root.dimension ??
+                ""
+            )
+          ) || undefined,
         }
       : undefined;
-
-  const metaIn = root.meta || {};
   let summary = parseLySummary(chart?.summary || root.summary);
   const seriesHasLy = series.some(
     (p) => p.value_ly != null && Number.isFinite(Number(p.value_ly))
@@ -823,17 +1068,23 @@ export function normalizeDashboardWidgetPayload(
     config = { ...(config || {}), ...(metaIn.config as object) };
   }
 
+  const widgetKeyForFlat = normalizeWidgetKey(root.widget_key || req.widget_key);
+
   const kpis: AnalysisKpi[] = Array.isArray(root.kpis)
     ? root.kpis.map((k: any, i: number) => {
-        const value = Number(k.value) || 0;
+        const metricLabel = String(k.label || k.title || k.key || "KPI");
+        const picked = pickWidgetKpiMetrics(root, k, widgetKeyForFlat, metricLabel);
+        const value = picked?.value ?? (Number(k.value) || 0);
         const changePct =
-          k.change_pct != null
+          picked?.changePct ??
+          (k.change_pct != null
             ? Number(k.change_pct)
             : k.change_percentage != null
               ? Number(k.change_percentage)
-              : null;
+              : null);
         let previous =
-          k.previous != null
+          picked?.previous ??
+          (k.previous != null
             ? Number(k.previous)
             : k.value_ly != null
               ? Number(k.value_ly)
@@ -841,41 +1092,37 @@ export function normalizeDashboardWidgetPayload(
                 ? Number(k.sales_ly)
                 : k.previous_year_value != null
                   ? Number(k.previous_year_value)
-                  : null;
+                  : null);
         if (previous == null) {
           previous = inferPreviousFromChange(value, changePct);
         }
+        const fmtRaw = String(k.format || "currency").toLowerCase();
+        const format =
+          fmtRaw === "percent" || fmtRaw === "pct" || fmtRaw === "percentage"
+            ? "percent"
+            : fmtRaw === "integer" || fmtRaw === "number"
+              ? "number"
+              : "currency";
+        const resolvedFormat = resolveAnalysisKpiFormat(widgetKeyForFlat, {
+          label: metricLabel,
+          kpiFormat: format !== "currency" ? format : undefined,
+          configFormat: String(k.format || config?.format || ""),
+        });
         return {
-          key: String(k.key || k.id || `kpi_${i}`),
-          label: String(k.label || k.title || k.key || "KPI"),
+          key: String(k.kpi_id || k.key || k.id || `kpi_${i}`),
+          label: metricLabel,
           value,
           previous,
           change_pct: changePct,
-          format: k.format || "currency",
+          format: resolvedFormat,
         };
       })
     : [];
 
   // Flat KPI payload: { value, value_ly, change_pct, display }
-  if (!kpis.length && (root.value != null || root.net_sales != null)) {
-    const value = Number(root.value ?? root.net_sales) || 0;
-    const changePct =
-      root.change_pct != null
-        ? Number(root.change_pct)
-        : root.change_percentage != null
-          ? Number(root.change_percentage)
-          : null;
-    let previous =
-      root.value_ly != null
-        ? Number(root.value_ly)
-        : root.previous != null
-          ? Number(root.previous)
-          : root.previous_year_value != null
-            ? Number(root.previous_year_value)
-            : null;
-    if (previous == null) {
-      previous = inferPreviousFromChange(value, changePct);
-    }
+  const flatFields = readFlatKpiFields(root, widgetKeyForFlat);
+  if (!kpis.length && flatFields) {
+    const { value, previous, changePct } = flatFields;
     const metricLabel = String(
       root.label ||
         root.title ||
@@ -891,11 +1138,36 @@ export function normalizeDashboardWidgetPayload(
       value,
       previous,
       change_pct: changePct,
-      format: "currency",
+      format: resolveAnalysisKpiFormat(widgetKeyForFlat, {
+        label: metricLabel,
+        configFormat: String(root.config?.format || config?.format || ""),
+      }),
     });
+  } else if (flatFields && kpis.length) {
+    const idx = 0;
+    const fmt = inferKpiFormat(widgetKeyForFlat, {
+      label: kpis[idx].label,
+      configFormat: String(config?.format || ""),
+    });
+    const sanitized = sanitizeKpiDisplayValue(
+      widgetKeyForFlat,
+      kpis[idx].label,
+      kpis[idx].value,
+      fmt
+    );
+    if (sanitized == null) {
+      kpis[idx] = {
+        ...kpis[idx],
+        value: flatFields.value,
+        previous: flatFields.previous ?? kpis[idx].previous,
+        change_pct: flatFields.changePct ?? kpis[idx].change_pct,
+      };
+    }
   }
 
-  if (!kpis.length && summary) {
+  const widgetKeyHint = normalizeWidgetKey(root.widget_key || req.widget_key);
+
+  if (!kpis.length && summary && isSalesTotalWidget(widgetKeyHint)) {
     const metricLabel = String(chart?.metric || req.metric || "KPI")
       .replace(/_/g, " ")
       .replace(/\b\w/g, (c: string) => c.toUpperCase());
@@ -905,15 +1177,14 @@ export function normalizeDashboardWidgetPayload(
       value: summary.value,
       previous: summary.value_ly ?? null,
       change_pct: summary.change_pct ?? null,
-      format: "currency",
+      format: resolveAnalysisKpiFormat(widgetKeyHint, { label: metricLabel }),
     });
-  } else if (summary) {
+  } else if (summary && isSalesTotalWidget(widgetKeyHint)) {
     const idx = kpis.findIndex(
       (k) =>
         k.key === "total" ||
         k.key === chart?.metric ||
-        k.key === req.metric ||
-        /sales/i.test(k.label)
+        k.key === req.metric
     );
     if (idx >= 0) {
       kpis[idx] = {
@@ -939,6 +1210,65 @@ export function normalizeDashboardWidgetPayload(
       value: rows.reduce((s, r) => s + r.value, 0),
       format: "currency",
     });
+  }
+
+  if (
+    isHealthWidgetKey(widgetKeyHint) &&
+    !kpis.length &&
+    root.score != null &&
+    Number.isFinite(Number(root.score))
+  ) {
+    kpis.push({
+      key: "health_score",
+      label: String(root.label || root.title || "Health"),
+      value: Number(root.score),
+      previous:
+        root.value_ly != null
+          ? Number(root.value_ly)
+          : root.previous != null
+            ? Number(root.previous)
+            : null,
+      change_pct:
+        root.change_pct != null ? Number(root.change_pct) : null,
+      format: "number",
+    });
+  }
+
+  if (isHealthWidgetKey(widgetKeyHint)) {
+    const healthMax =
+      Number(config?.max_value) ||
+      Number(config?.max) ||
+      Number(config?.max_score) ||
+      100;
+    for (let i = 0; i < kpis.length; i++) {
+      const k = kpis[i];
+      kpis[i] = {
+        ...k,
+        value: normalizeHealthScoreValue(k.value, {
+          format: k.format,
+          maxScore: healthMax,
+        }),
+        format: "number",
+      };
+      if (k.previous != null && Number.isFinite(Number(k.previous))) {
+        kpis[i].previous = normalizeHealthScoreValue(Number(k.previous), {
+          format: k.format,
+          maxScore: healthMax,
+        });
+      }
+    }
+    if (summary?.value != null) {
+      summary = {
+        ...summary,
+        value: normalizeHealthScoreValue(summary.value, { maxScore: healthMax }),
+        value_ly:
+          summary.value_ly != null
+            ? normalizeHealthScoreValue(Number(summary.value_ly), {
+                maxScore: healthMax,
+              })
+            : summary.value_ly,
+      };
+    }
   }
 
   // Prefer live LY from BA (Desk checkbox). Don't strip just because
@@ -967,8 +1297,59 @@ export function normalizeDashboardWidgetPayload(
     }
   }
 
+  const widgetKeyFinal = normalizeWidgetKey(root.widget_key || req.widget_key);
+  for (let i = 0; i < kpis.length; i += 1) {
+    const k = kpis[i];
+    const fmt = inferKpiFormat(widgetKeyFinal, {
+      label: k.label,
+      kpiFormat: k.format,
+      configFormat: String(config?.format || ""),
+    });
+    const resolvedFormat = resolveAnalysisKpiFormat(widgetKeyFinal, {
+      label: k.label,
+      kpiFormat: fmt,
+      configFormat: String(config?.format || ""),
+    });
+    let value = sanitizeKpiDisplayValue(widgetKeyFinal, k.label, k.value, fmt);
+    let previous = sanitizeKpiDisplayValue(
+      widgetKeyFinal,
+      k.label,
+      k.previous,
+      fmt
+    );
+    if (value == null) {
+      const retry = pickWidgetKpiMetrics(
+        root,
+        null,
+        widgetKeyFinal,
+        k.label
+      );
+      if (retry) {
+        value = retry.value;
+        previous = retry.previous;
+      }
+    }
+    kpis[i] = {
+      ...k,
+      format: resolvedFormat,
+      value: value != null && Number.isFinite(value) ? value : Number.NaN,
+      previous:
+        previous != null && Number.isFinite(previous) ? previous : undefined,
+      change_pct:
+        value != null && Number.isFinite(value) ? k.change_pct : undefined,
+    };
+  }
+
   const dimension =
-    chart?.dimension || metaIn.dimension || req.dimension || undefined;
+    normalizeDrillDimensionKey(
+      String(
+        metaIn.dimension ??
+          table?.dimension ??
+          chart?.dimension ??
+          req.dimension ??
+          ""
+      )
+    ) || undefined;
   const drillable =
     metaIn.drillable === true ||
     (metaIn.next_dimension != null && String(metaIn.next_dimension).length > 0);
@@ -1020,11 +1401,42 @@ export function normalizeDashboardWidgetPayload(
       next_dimension: metaIn.next_dimension
         ? String(metaIn.next_dimension)
         : null,
+      dimension: dimension ?? null,
       drillable,
       render_hint: metaIn.render_hint,
       currency: root.currency || metaIn.currency || "SAR",
       source: "widget_data",
       ly_display: lyDisplay,
+      section_title:
+        metaIn.section_title != null
+          ? String(metaIn.section_title)
+          : config?.section_title != null
+            ? String(config.section_title)
+            : null,
+      row_group:
+        metaIn.row_group != null
+          ? String(metaIn.row_group)
+          : config?.row_group != null
+            ? String(config.row_group)
+            : null,
+      kpi_id:
+        metaIn.kpi_id != null
+          ? String(metaIn.kpi_id)
+          : root.kpi?.kpi_id != null
+            ? String(root.kpi.kpi_id)
+            : null,
+      chart_key:
+        metaIn.chart_key != null
+          ? String(metaIn.chart_key)
+          : config?.chart_key != null
+            ? String(config.chart_key)
+            : null,
+      compare:
+        metaIn.compare != null
+          ? String(metaIn.compare)
+          : chart?.compare != null
+            ? String(chart.compare)
+            : null,
     },
   };
 }
@@ -1081,13 +1493,31 @@ async function enrichLyFromDashboard(
 ): Promise<DashboardWidgetDataResponse> {
   if (!req.show_ly || hasLyAbsolute(payload)) return payload;
 
+  const widgetKey = normalizeWidgetKey(req.widget_key || payload.widget_key);
+  if (!isSalesTotalLyWidget(widgetKey)) {
+    return payload;
+  }
+
   try {
     const { optimizedApis } = await import("./optimized-apis");
-    const dash = await optimizedApis.getDashboardData({
-      company: req.company,
-      from_date: req.from_date,
-      to_date: req.to_date,
-    });
+    const lyKey = `${req.company || ""}|${req.from_date || ""}|${req.to_date || ""}|${req.period || ""}`;
+    let dashPromise = lyDashboardInflight.get(lyKey);
+    if (!dashPromise) {
+      dashPromise = optimizedApis
+        .getDashboardData({
+          company: req.company,
+          from_date: req.from_date,
+          to_date: req.to_date,
+        })
+        .finally(() => {
+          lyDashboardInflight.delete(lyKey);
+        });
+      lyDashboardInflight.set(lyKey, dashPromise);
+    }
+    const dash = await dashPromise;
+    if (!dash || typeof dash !== "object" || Array.isArray(dash)) {
+      return payload;
+    }
     const dashKpis = Array.isArray((dash as any)?.kpis)
       ? (dash as any).kpis
       : [];
@@ -1291,6 +1721,88 @@ async function enrichLyFromDashboard(
   }
 }
 
+function inferDimensionFromWidgetKey(
+  widgetKey: string | undefined | null
+): string | undefined {
+  const k = normalizeWidgetKey(widgetKey);
+  if (/salesperson|sales_person|top_salesperson/.test(k)) return "salesperson";
+  if (/territory/.test(k)) return "territory";
+  if (/customer_group|by_customer/.test(k)) return "customer_group";
+  if (/channel/.test(k)) return "channel";
+  if (/warehouse/.test(k)) return "warehouse";
+  if (/brand/.test(k)) return "brand";
+  return undefined;
+}
+
+function inferDefaultWidgetLimit(widgetKey: string | undefined | null): number | undefined {
+  const k = normalizeWidgetKey(widgetKey);
+  if (/ranking|by_|top_|salesperson|territory|channel|customer_group/.test(k)) {
+    return 10;
+  }
+  return undefined;
+}
+
+function isSalespersonRankingWidget(widgetKey: string | undefined | null): boolean {
+  const k = normalizeWidgetKey(widgetKey);
+  return /salesperson|sales_person|top_salesperson/.test(k);
+}
+
+async function fromSalespersonPerformanceFallback(
+  req: DashboardWidgetDataRequest
+): Promise<DashboardWidgetDataResponse | null> {
+  try {
+    const { fetchSalespersonPerformance } = await import("./salesPerformance");
+    const perf = await fetchSalespersonPerformance({
+      company: req.company,
+      from_date: req.from_date,
+      to_date: req.to_date,
+      period: req.period,
+    });
+    const limit = req.limit || inferDefaultWidgetLimit(req.widget_key) || 10;
+    const rows: AnalysisRow[] = (perf.rows || [])
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id,
+        label: r.name,
+        value: r.sales,
+        previous: r.sales_ly,
+        change_pct: r.growth_pct,
+      }))
+      .filter((r) => r.label && Number.isFinite(r.value) && r.value > 0);
+    if (!rows.length) return null;
+    return {
+      widget_key: req.widget_key,
+      widget_type: "RANKING",
+      label: "Salesperson",
+      currency: "SAR",
+      show_ly: Boolean(req.show_ly),
+      rows,
+      chart: {
+        series: rows.map((r) => ({
+          label: r.label,
+          value: r.value,
+          value_ly: r.previous,
+          change_pct: r.change_pct,
+          dimension_value: r.id,
+        })),
+        metric: "net_sales",
+        dimension: "salesperson",
+        filters: req.filters || {},
+        compare: req.show_ly ? "ly" : undefined,
+      },
+      kpis: [],
+      meta: {
+        drillable: false,
+        currency: "SAR",
+        source: "widget_data",
+      },
+    };
+  } catch (e) {
+    logger.warn("salesperson performance fallback failed", e);
+    return null;
+  }
+}
+
 async function fromTopBrandsFallback(
   req: DashboardWidgetDataRequest
 ): Promise<DashboardWidgetDataResponse> {
@@ -1403,7 +1915,10 @@ async function fromTopBrandsFallback(
 async function fromGenericFallback(
   req: DashboardWidgetDataRequest
 ): Promise<DashboardWidgetDataResponse> {
-  const dimension = req.dimension || "territory";
+  const dimension =
+    req.dimension ||
+    inferDimensionFromWidgetKey(req.widget_key) ||
+    "territory";
   if (!assertLogicalDimensionKey(dimension)) return emptyWidget(req);
 
   const flatFilters: Record<string, string | string[]> = {};
@@ -1538,7 +2053,8 @@ async function fromGenericFallback(
     },
   };
 
-  return enrichLyFromDashboard(payload, req);
+  const enriched = await enrichLyFromDashboard(payload, req);
+  return deliverWidgetResponse(req, req.company, enriched);
 }
 
 /**
@@ -1565,23 +2081,38 @@ export async function fetchDashboardWidgetData(
     return fromGenericFallback({ ...req, company });
   }
 
+  const territoryFilter = req.filters?.territory?.[0];
+  const territoryParams = baTerritoryRequestParams(req.filters);
+
   const rawParams = {
     widget_key: req.widget_key,
     company,
     from_date: req.from_date,
     to_date: req.to_date,
     period: req.period,
-    limit: req.limit,
-    // Do NOT send dimension=brand — live BA SQL errors:
-    // "Unknown column 'sii.brand'". widget_key (e.g. sales_brand) drives the chart.
-    dimension:
-      req.dimension && String(req.dimension).toLowerCase() !== "brand"
-        ? req.dimension
-        : undefined,
+    limit: req.limit ?? inferDefaultWidgetLimit(req.widget_key),
+    // Root/list: omit dimension=brand (legacy sii.brand SQL). Drill depth ≥2: send brand.
+    dimension: (() => {
+      const d = req.dimension ? String(req.dimension).trim() : "";
+      const lower = d.toLowerCase();
+      if (!d) return undefined;
+      if (lower === "brand") {
+        return req.drill_depth != null && Number(req.drill_depth) >= 2
+          ? d
+          : undefined;
+      }
+      return d;
+    })(),
     drill_depth: req.drill_depth,
     filters: req.filters ? JSON.stringify(req.filters) : undefined,
-    // Always ask; BA returns LY only when Desk Show LY is checked
-    show_ly: 1,
+    drill_crumbs: req.drill_crumbs,
+    ...territoryParams,
+    // Drill: skip LY SQL on server when possible (rows may still include change_pct).
+    show_ly:
+      req.drill_depth != null && Number(req.drill_depth) > 0
+        ? 0
+        : 1,
+    view_all_sales: req.view_all_sales ? 1 : undefined,
   };
 
   const paramKeys = [
@@ -1594,19 +2125,31 @@ export async function fetchDashboardWidgetData(
     "dimension",
     "drill_depth",
     "filters",
+    "drill_crumbs",
+    "territory",
+    "territories",
     "show_ly",
+    "view_all_sales",
   ] as const;
 
-  const params = pickBaParams(rawParams, [...paramKeys], cfg);
+  const params = restoreTerritoryBaParams(
+    rawParams,
+    pickBaParams(rawParams, [...paramKeys], cfg)
+  );
 
   const callWidgetApi = async (p: Record<string, unknown>) => {
     try {
       return await http.post<unknown>(
         ERP_ANALYSIS.config.getDashboardWidgetData,
-        p
+        p,
+        { silentError: true }
       );
     } catch (postErr) {
       const st = (postErr as any)?.response?.status;
+      // Access Profile 403 — GET hits the same guard
+      if (st === 401 || st === 403) {
+        throw postErr;
+      }
       if (st === 500 || st === 404 || st === 417) {
         // Some sites only expose GET; also retry GET after POST 500
         return await http.get<unknown>(
@@ -1633,11 +2176,13 @@ export async function fetchDashboardWidgetData(
     let payload = unwrapWidgetMessage(response);
     let normalized = normalizeDashboardWidgetPayload(payload, { ...req, company });
 
-    // If BA 500/empty when dimension was sent, retry without dimension
+    // If BA 500/empty when dimension was sent, retry without dimension.
+    // Skip on drill — second call is slow and returns the wrong level (top divisions).
     if (
       !normalized.rows.length &&
       !normalized.chart?.series?.length &&
-      rawParams.dimension
+      rawParams.dimension &&
+      !(req.drill_depth != null && Number(req.drill_depth) > 0)
     ) {
       try {
         const retryParams = pickBaParams(
@@ -1656,14 +2201,22 @@ export async function fetchDashboardWidgetData(
       }
     }
 
-    normalized = await enrichLyFromDashboard(normalized, {
-      ...req,
-      company,
-      show_ly: Boolean(req.show_ly),
-    });
+    const drillDepth = Number(req.drill_depth ?? 0);
+    const isDrillRequest = drillDepth > 0;
+
+    if (!isDrillRequest) {
+      normalized = await enrichLyFromDashboard(normalized, {
+        ...req,
+        company,
+        show_ly: Boolean(req.show_ly),
+      });
+    } else if (req.show_ly) {
+      normalized = { ...normalized, show_ly: true };
+    }
 
     // Brand pie: if still no slices, use complete-dashboard top_brands
     if (
+      !isDrillRequest &&
       !normalized.rows.length &&
       /brand/i.test(String(req.widget_key || req.dimension || ""))
     ) {
@@ -1682,17 +2235,35 @@ export async function fetchDashboardWidgetData(
       }
     }
 
-    console.warn("[widget-ly] loaded", {
-      key: req.widget_key,
-      show_ly: normalized.show_ly,
-      hasSummary: Boolean(normalized.chart?.summary),
-      summaryLy: normalized.chart?.summary?.value_ly ?? null,
-      kpiPrevious: normalized.kpis?.[0]?.previous ?? null,
-      kpiChange: normalized.kpis?.[0]?.change_pct ?? null,
-      seriesCount: normalized.chart?.series?.length ?? 0,
-      rowCount: normalized.rows.length,
-      source: normalized.meta.source,
-    });
+    // Salesperson ranking: fallback to legacy performance API
+    if (
+      !isDrillRequest &&
+      !normalized.rows.length &&
+      !normalized.chart?.series?.length &&
+      isSalespersonRankingWidget(req.widget_key)
+    ) {
+      const fromSp = await fromSalespersonPerformanceFallback({ ...req, company });
+      if (fromSp?.rows.length) {
+        normalized = {
+          ...fromSp,
+          show_ly: normalized.show_ly || fromSp.show_ly,
+        };
+      }
+    }
+
+    if (__DEV__ && !isDrillRequest) {
+      console.warn("[widget-ly] loaded", {
+        key: req.widget_key,
+        show_ly: normalized.show_ly,
+        hasSummary: Boolean(normalized.chart?.summary),
+        summaryLy: normalized.chart?.summary?.value_ly ?? null,
+        kpiPrevious: normalized.kpis?.[0]?.previous ?? null,
+        kpiChange: normalized.kpis?.[0]?.change_pct ?? null,
+        seriesCount: normalized.chart?.series?.length ?? 0,
+        rowCount: normalized.rows.length,
+        source: normalized.meta.source,
+      });
+    }
 
     logger.info("Widget data loaded", {
       key: req.widget_key,
@@ -1713,12 +2284,18 @@ export async function fetchDashboardWidgetData(
     ) {
       // Ensure Desk show_ly request is reflected even if BA omits the flag
       if (req.show_ly && !normalized.show_ly && normalized.chart?.summary) {
-        return { ...normalized, show_ly: true };
+        return deliverWidgetResponse(req, company, {
+          ...normalized,
+          show_ly: true,
+        });
       }
       if (req.show_ly) {
-        return { ...normalized, show_ly: true };
+        return deliverWidgetResponse(req, company, {
+          ...normalized,
+          show_ly: true,
+        });
       }
-      return normalized;
+      return deliverWidgetResponse(req, company, normalized);
     }
 
     logger.info(
@@ -1732,14 +2309,79 @@ export async function fetchDashboardWidgetData(
       return fromGenericFallback({ ...req, company });
     }
     const status = (error as any)?.response?.status;
-    if (status === 403) {
-      const err = new Error("Outside your territory scope");
-      (err as any).code = "SCOPE_FORBIDDEN";
-      throw err;
+    if (status === 403 || isBaPermissionDeniedError(error)) {
+      const msg =
+        extractFrappeErrorMessage(error) ||
+        "This widget is not enabled for your mobile profile";
+      logger.warn(`[widget-data] ${req.widget_key}: ${msg}`);
+      return emptyWidget(req);
     }
 
-    // 500 with dimension — retry without dimension (widget_key only)
-    if (status === 500 && req.dimension) {
+    // 500 with drill filters — never drop division/sub_group filters (wrong level / wrong division).
+    if (
+      status === 500 &&
+      Number(req.drill_depth ?? 0) > 0
+    ) {
+      throw error;
+    }
+
+    // 500 with territory filters — do not retry without filters (same numbers as "All")
+    if (
+      status === 500 &&
+      req.filters &&
+      Object.keys(req.filters).length &&
+      !req.filters.territory?.length
+    ) {
+      try {
+        logger.warn(
+          `${METHOD} 500 with filters — retry without filters for ${req.widget_key}`
+        );
+        const retryParams = pickBaParams(
+          {
+            widget_key: req.widget_key,
+            company,
+            from_date: req.from_date,
+            to_date: req.to_date,
+            period: req.period,
+            limit: req.limit,
+            drill_depth: req.drill_depth,
+            show_ly: 1,
+          },
+          [
+            "widget_key",
+            "company",
+            "from_date",
+            "to_date",
+            "period",
+            "limit",
+            "drill_depth",
+            "show_ly",
+          ],
+          cfg
+        );
+        const response = await callWidgetApi(retryParams);
+        const normalized = normalizeDashboardWidgetPayload(
+          unwrapWidgetMessage(response),
+          { ...req, company, filters: undefined }
+        );
+        if (
+          normalized.rows.length ||
+          normalized.kpis.length ||
+          normalized.chart?.series?.length
+        ) {
+          return deliverWidgetResponse(req, company, normalized);
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+
+    // 500 with dimension — retry without dimension (widget_key only; not on drill)
+    if (
+      status === 500 &&
+      req.dimension &&
+      Number(req.drill_depth ?? 0) === 0
+    ) {
       try {
         logger.warn(
           `${METHOD} 500 with dimension=${req.dimension} — retry without dimension`
@@ -1781,7 +2423,7 @@ export async function fetchDashboardWidgetData(
         ) {
           const fromBrands = await fromTopBrandsFallback({ ...req, company });
           if (fromBrands.rows.length) {
-            return {
+            return deliverWidgetResponse(req, company, {
               ...fromBrands,
               show_ly: true,
               chart: {
@@ -1789,7 +2431,7 @@ export async function fetchDashboardWidgetData(
                 summary:
                   normalized.chart?.summary || fromBrands.chart?.summary,
               },
-            };
+            });
           }
         }
         if (
@@ -1797,7 +2439,10 @@ export async function fetchDashboardWidgetData(
           normalized.kpis.length ||
           normalized.chart?.summary
         ) {
-          return { ...normalized, show_ly: true };
+          return deliverWidgetResponse(req, company, {
+            ...normalized,
+            show_ly: true,
+          });
         }
       } catch {
         /* fall through */
@@ -1812,6 +2457,21 @@ export async function fetchDashboardWidgetData(
       }
       return await fromGenericFallback({ ...req, company });
     } catch {
+      if (status === 500 || isNetworkOrTlsError(error)) {
+        const cached = await readCachedWidgetFallback(req, company);
+        if (cached) {
+          logger.warn(
+            `[widget-data] ${req.widget_key}: using cached widget after network error`
+          );
+          return cached;
+        }
+        logger.warn(
+          `[widget-data] ${req.widget_key}: ${
+            status === 500 ? "server 500" : "network error"
+          } — returning empty widget`
+        );
+        return emptyWidget(req);
+      }
       throw error;
     }
   }

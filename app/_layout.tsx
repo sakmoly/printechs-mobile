@@ -29,6 +29,8 @@ const queryClient = new QueryClient({
     queries: {
       retry: 1,
       refetchOnWindowFocus: true,
+      staleTime: 60_000,
+      gcTime: 10 * 60_000,
     },
   },
 });
@@ -106,11 +108,23 @@ export default function RootLayout() {
   }, [isAuthenticated, isLoading, segments, router]);
 
   if (isLoading || !fontsLoaded) {
-    return <LoadingScreen message="Authenticating..." />;
+    return (
+      <SafeAreaProvider>
+        <QueryClientProvider client={queryClient}>
+          <LoadingScreen message="Authenticating..." />
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    );
   }
 
   if (isAuthenticated && !bootstrapReady) {
-    return <LoadingScreen message="Loading workspace..." />;
+    return (
+      <SafeAreaProvider>
+        <QueryClientProvider client={queryClient}>
+          <LoadingScreen message="Loading workspace..." />
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    );
   }
 
   return (
@@ -119,29 +133,6 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="sales-dashboard" />
-          <Stack.Screen name="salesperson-performance" />
-          <Stack.Screen name="product-performance" />
-          <Stack.Screen name="customer-360" />
-          <Stack.Screen name="collection-dashboard" />
-          <Stack.Screen name="sales-order-dashboard" />
-          <Stack.Screen name="receivables-dashboard" />
-          <Stack.Screen name="inventory-dashboard" />
-          <Stack.Screen name="inventory-health" />
-          <Stack.Screen name="payables-dashboard" />
-          <Stack.Screen name="purchase-performance-dashboard" />
-          <Stack.Screen name="profitability-dashboard" />
-          <Stack.Screen name="generic-analysis" />
-          <Stack.Screen name="exceptions-dashboard" />
-          <Stack.Screen name="approval-analytics" />
-          <Stack.Screen name="territory-details" />
-          <Stack.Screen name="customer-statement" />
-          <Stack.Screen name="user-profile" />
-          <Stack.Screen name="employee-profile/[id]" />
-          <Stack.Screen name="kpi-details" />
-          <Stack.Screen name="pdf-viewer" />
-          <Stack.Screen name="flip-web" />
-          <Stack.Screen name="youtube-video" />
         </Stack>
       </QueryClientProvider>
     </SafeAreaProvider>

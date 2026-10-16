@@ -1,4 +1,5 @@
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { isNetworkOrTlsError } from "../api/serverUrl";
 import { useEffect, useRef } from "react";
 import {
   optimizedApis,
@@ -392,7 +393,10 @@ export const useApprovalsData = (
     },
     staleTime: 30 * 1000, // 30 seconds (approvals change frequently)
     gcTime: 2 * 60 * 1000, // 2 minutes
-    retry: 1,
+    retry: (failureCount, error) => {
+      if (isNetworkOrTlsError(error)) return failureCount < 2;
+      return failureCount < 1;
+    },
     // Enable automatic refetch on window focus for live updates
     refetchOnWindowFocus: true,
     // Enable background refetch

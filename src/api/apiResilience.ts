@@ -75,6 +75,7 @@ const ALWAYS_ALLOWED_PARAMS = new Set([
   "drill_depth",
   "metric",
   "show_ly",
+  "view_all_sales",
 ]);
 
 /** Query/body keys tied to optional org dimensions (logical keys only) */
@@ -177,6 +178,41 @@ export function pickBaParams(
   return out;
 }
 
+/** Re-apply territory scope when Desk disabled the territory dimension but APIs still accept it. */
+export function restoreTerritoryBaParams(
+  raw: Record<string, unknown> | undefined | null,
+  cleaned: Record<string, unknown>
+): Record<string, unknown> {
+  const source = raw || {};
+  const out = { ...cleaned };
+  if (
+    source.territory != null &&
+    source.territory !== "" &&
+    out.territory == null
+  ) {
+    out.territory = source.territory;
+  }
+  if (
+    source.territories != null &&
+    source.territories !== "" &&
+    out.territories == null
+  ) {
+    out.territories = source.territories;
+  }
+  return out;
+}
+
+/** Deep clone via JSON — avoids non-plain axios/RN values breaking render/state. */
+export function plainJsonClone<T>(value: T): T {
+  if (value == null) return value;
+  if (typeof value !== "object") return value;
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return value;
+  }
+}
+
 /** Zod parse that never throws — returns null on failure. */
 export function softParse<T>(
   schema: z.ZodType<T>,
@@ -277,11 +313,14 @@ export function unwrapFrappeMessage(response: unknown): any {
 /** Prefer ERPNext Company from access scope over login stub names */
 export function resolveCompanyName(
   scopeCompany?: string | null,
-  userCompany?: string | null
+  userCompany?: string | null,
+  bootstrapCompany?: string | null
 ): string | undefined {
   const scope = (scopeCompany || "").trim();
-  const user = (userCompany || "").trim();
   if (scope) return scope;
+  const bootstrap = (bootstrapCompany || "").trim();
+  if (bootstrap) return bootstrap;
+  const user = (userCompany || "").trim();
   if (user) return user;
   return undefined;
 }

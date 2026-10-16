@@ -4,12 +4,18 @@ import { oauthApi } from "./oauth";
 import { ERP_ANALYSIS } from "./endpoints";
 import { isApiEnabled } from "./mobileConfig";
 import {
+  BaApiUnavailableError,
   demoDataOnlyWhenNoServer,
   filterBaParams,
   requireBaMethodEnabled,
+  restoreTerritoryBaParams,
   unwrapFrappeMessage,
   withBaDemoFallback,
 } from "./apiResilience";
+import {
+  isBaPermissionDeniedError,
+  isMissingBaMethodError,
+} from "./baErrors";
 import {
   getDemoProductPerformance,
   getDemoSalespersonPerformance,
@@ -572,6 +578,26 @@ export async function fetchSalesInvoiceItems(
   return [];
 }
 
+async function callProductPerformanceApi(
+  clean: Record<string, unknown>
+): Promise<unknown> {
+  const url = ERP_ANALYSIS.product.getPerformance;
+  try {
+    return await http.post<any>(url, clean, { silentError: true });
+  } catch (postErr) {
+    const postStatus = (postErr as { response?: { status?: number } })?.response
+      ?.status;
+    try {
+      return await http.get<any>(url, clean, { silentError: true });
+    } catch (getErr) {
+      if (postStatus === 405 || postStatus === 404) {
+        throw getErr;
+      }
+      throw postErr;
+    }
+  }
+}
+
 export async function fetchProductPerformance(
   params: ProductPerfParams = {}
 ): Promise<ProductPerformance> {
@@ -590,15 +616,34 @@ export async function fetchProductPerformance(
     "get_product_performance",
     async () => {
       await prepareRequest();
-      const clean = filterBaParams({ ...params, level } as any, cfg);
-      const response = await http.get<any>(
-        ERP_ANALYSIS.product.getPerformance,
-        clean
+      const raw = { ...params, level } as Record<string, unknown>;
+      let clean = restoreTerritoryBaParams(
+        raw,
+        filterBaParams(raw, cfg)
       );
-      return normalizeProductPerformance(
-        unwrapFrappeMessage(response),
-        level
-      );
+      if (clean.territory && !clean.territories) {
+        clean = { ...clean, territories: clean.territory };
+      }
+      try {
+        const response = await callProductPerformanceApi(clean);
+        return normalizeProductPerformance(
+          unwrapFrappeMessage(response),
+          level
+        );
+      } catch (error) {
+        if (
+          isMissingBaMethodError(error) ||
+          isBaPermissionDeniedError(error)
+        ) {
+          throw error;
+        }
+        const status = (error as { response?: { status?: number } })?.response
+          ?.status;
+        if (status === 400 || status === 403) {
+          throw new BaApiUnavailableError("get_product_performance");
+        }
+        throw error;
+      }
     },
     () => getDemoProductPerformance(level)
   );

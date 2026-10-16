@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -13,72 +13,79 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuthStore } from "../../src/store/auth";
 import { useBootstrapStore } from "../../src/store/bootstrap";
-import { clearMyAccessCache } from "../../src/api/permissions";
 import { useNavigation } from "../../src/hooks/useNavigation";
-import { groupHubItemsBySection } from "../../src/modules/resolveHubItems";
+import {
+  groupHubItemsByFamily,
+  shortHubChipLabel,
+  type MoreMenuFamily,
+  type ResolvedHubItem,
+} from "../../src/modules/resolveHubItems";
 import { openHubItem } from "../../src/modules/moduleRouter";
-import { supportsDynamicModules } from "../../src/types/bootstrap";
-import { logger } from "../../src/utils/logger";
+import { Fonts, Type } from "../../src/theme/typography";
+import {
+  SafeScreen,
+  systemStatusBarClearance,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 
 export default function MoreScreen() {
   const insets = useSafeAreaInsets();
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const loadPermissions = useAuthStore((s) => s.loadPermissions);
-  const bootstrap = useBootstrapStore((s) => s.bootstrap);
   const {
     modules: items,
     branding,
     businessType,
   } = useNavigation();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [activeByFamily, setActiveByFamily] = useState<Record<string, string>>(
+    {}
+  );
 
   useFocusEffect(
     useCallback(() => {
       if (!useAuthStore.getState().isAuthenticated) return;
-      void (async () => {
-        try {
-          await clearMyAccessCache();
-        } catch {
-          /* optional */
-        }
-        await Promise.all([
-          loadPermissions(),
-          useBootstrapStore.getState().refresh(),
-        ]);
-      })();
+      void Promise.all([
+        loadPermissions(),
+        useBootstrapStore.getState().refresh(),
+      ]);
     }, [loadPermissions])
   );
 
-  useEffect(() => {
-    if (!__DEV__) return;
-    const mods = bootstrap?.modules || [];
-    logger.info("[more-hub]", {
-      schema_version: bootstrap?.schema_version,
-      dynamic: supportsDynamicModules(bootstrap),
-      source: bootstrap?.source,
-      bootstrapModules: mods.map(
-        (m) => `${m.key}|${m.screen_type || "module"}|en=${m.enabled}`
-      ),
-      hubItems: items.map((i) => `${i.key}|${i.screenType}`),
-    });
-  }, [bootstrap, items]);
+  const families = useMemo(() => groupHubItemsByFamily(items), [items]);
 
-  const grouped = useMemo(() => groupHubItemsBySection(items), [items]);
-
-  const empty = items.length === 0;
+  const empty = families.length === 0;
   const subtitle =
     branding.appSubtitle ||
     (businessType && businessType !== "B2B"
-      ? `${String(businessType).replace(/_/g, " ")} · dashboards by area`
-      : "Dashboards grouped by business area");
+      ? `${String(businessType).replace(/_/g, " ")} · pick an area`
+      : "Tap a group to open boards");
+
+  const openChip = (family: MoreMenuFamily, item: ResolvedHubItem) => {
+    setActiveByFamily((prev) => ({ ...prev, [family.id]: item.key }));
+    openHubItem(item);
+  };
+
+  const onFamilyPress = (family: MoreMenuFamily) => {
+    // Always expand/collapse so Inventory / Collection / etc. show boards
+    // (Sales has many chips; others often have a single Overview board).
+    setExpandedId((prev) => (prev === family.id ? null : family.id));
+  };
 
   return (
-    <View style={styles.container}>
+    <SafeScreen aboveTabBar includeTop={false} style={styles.container}>
       <LinearGradient
         colors={["#667eea", "#764ba2"]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
         style={[
           styles.header,
-          { paddingTop: Math.max(insets.top, Platform.OS === "ios" ? 52 : 36) },
+          {
+            paddingTop: systemStatusBarClearance(
+              insets.top,
+              Platform.OS === "ios" ? 12 : 10
+            ),
+          },
         ]}
       >
         <Text style={styles.headerTitle}>More</Text>
@@ -88,7 +95,7 @@ export default function MoreScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.list,
-          { paddingBottom: 24 + insets.bottom },
+          { paddingBottom: scrollPaddingBottom },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -102,39 +109,102 @@ export default function MoreScreen() {
             </Text>
           </View>
         ) : (
-          grouped.map((sec) => (
-            <View key={`section-${sec.id}`} style={styles.sectionBlock}>
-              <Text style={styles.sectionLabel}>{sec.label}</Text>
-              <View style={styles.grid}>
-                {sec.items.map((item) => (
-                  <TouchableOpacity
-                    key={`hub-${item.id}-${item.key}`}
-                    style={styles.card}
-                    activeOpacity={0.85}
-                    onPress={() => openHubItem(item)}
+          families.map((family) => {
+            const expanded = expandedId === family.id;
+            const activeKey =
+              activeByFamily[family.id] || family.primary.key;
+            const chipCount = family.chips.length;
+
+            return (
+              <View key={family.id} style={styles.familyCard}>
+                <TouchableOpacity
+                  activeOpacity={0.88}
+                  onPress={() => onFamilyPress(family)}
+                  onLongPress={() => openChip(family, family.primary)}
+                  style={styles.familyHeader}
+                >
+                  <View
+                    style={[
+                      styles.familyIcon,
+                      { backgroundColor: `${family.color}18` },
+                    ]}
                   >
-                    <View
-                      style={[
-                        styles.iconWrap,
-                        { backgroundColor: `${item.color}18` },
-                      ]}
-                    >
-                      <Ionicons name={item.icon} size={22} color={item.color} />
-                    </View>
-                    <Text style={styles.cardTitle} numberOfLines={1}>
-                      {item.title}
+                    <Ionicons
+                      name={family.icon}
+                      size={20}
+                      color={family.color}
+                    />
+                  </View>
+                  <View style={styles.familyText}>
+                    <Text style={styles.familyTitle} numberOfLines={1}>
+                      {family.title}
                     </Text>
-                    <Text style={styles.cardSub} numberOfLines={2}>
-                      {item.subtitle}
+                    <Text style={styles.familySub} numberOfLines={1}>
+                      {chipCount > 1
+                        ? `${chipCount} boards · ${family.subtitle}`
+                        : family.subtitle}
                     </Text>
-                  </TouchableOpacity>
-                ))}
+                  </View>
+                  <Ionicons
+                    name={expanded ? "chevron-up" : "chevron-down"}
+                    size={16}
+                    color="#94a3b8"
+                  />
+                </TouchableOpacity>
+
+                {expanded ? (
+                  <View style={styles.segment}>
+                    {family.chips.map((chip) => {
+                      const active = chip.key === activeKey;
+                      return (
+                        <TouchableOpacity
+                          key={`tab-${family.id}-${chip.key}`}
+                          style={[
+                            styles.segmentTab,
+                            active && styles.segmentTabActive,
+                            chipCount === 1 && styles.segmentTabSingle,
+                          ]}
+                          activeOpacity={0.85}
+                          onPress={() => openChip(family, chip)}
+                        >
+                          <View
+                            style={[
+                              styles.chipIconWrap,
+                              {
+                                backgroundColor: active
+                                  ? `${family.color}22`
+                                  : "#ffffff",
+                              },
+                            ]}
+                          >
+                            <Ionicons
+                              name={chip.icon}
+                              size={15}
+                              color={active ? family.color : "#64748b"}
+                            />
+                          </View>
+                          <Text
+                            style={[
+                              styles.segmentText,
+                              active && { color: family.color },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {chipCount === 1
+                              ? family.title
+                              : shortHubChipLabel(chip)}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ) : null}
               </View>
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 
@@ -145,66 +215,104 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   headerTitle: {
+    ...Type.hero,
     color: "#fff",
-    fontSize: 28,
-    fontWeight: "800",
+    fontFamily: Fonts.displayExtra,
   },
   headerSub: {
+    ...Type.caption,
     color: "rgba(255,255,255,0.88)",
-    fontSize: 14,
     marginTop: 4,
+    fontSize: 14,
   },
   list: {
     padding: 16,
+    gap: 10,
   },
-  sectionBlock: {
-    marginBottom: 20,
-  },
-  sectionLabel: {
-    fontSize: 12,
-    fontWeight: "800",
-    color: "#64748b",
-    textTransform: "uppercase",
-    letterSpacing: 0.7,
-    marginBottom: 10,
-    marginLeft: 2,
-  },
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginHorizontal: -5,
-  },
-  card: {
-    width: "47%",
-    flexGrow: 1,
-    maxWidth: "48.5%",
-    minWidth: "45%",
+  familyCard: {
+    width: "100%",
     backgroundColor: "#fff",
     borderRadius: 14,
-    padding: 12,
     borderWidth: 1,
     borderColor: "#eef2ff",
-    marginHorizontal: 5,
-    marginBottom: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
   },
-  iconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 11,
+  familyHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  familyIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
   },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: "800",
+  familyText: { flex: 1, minWidth: 0 },
+  familyTitle: {
+    fontFamily: Fonts.bodyBold,
+    fontSize: 15,
     color: "#111827",
-    marginBottom: 2,
   },
-  cardSub: {
-    fontSize: 11,
+  familySub: {
+    fontFamily: Fonts.body,
+    fontSize: 12,
     color: "#6b7280",
-    lineHeight: 15,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  segment: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    backgroundColor: "#f1f5f9",
+    borderRadius: 12,
+    padding: 6,
+    gap: 6,
+    marginTop: 10,
+  },
+  segmentTab: {
+    flexGrow: 1,
+    flexBasis: "30%",
+    minWidth: "28%",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+  },
+  segmentTabSingle: {
+    flexBasis: "100%",
+    minWidth: "100%",
+    flexDirection: "row",
+    justifyContent: "flex-start",
+    paddingHorizontal: 12,
+    gap: 10,
+  },
+  segmentTabActive: {
+    backgroundColor: "#ffffff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  chipIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#e2e8f0",
+  },
+  segmentText: {
+    fontFamily: Fonts.bodySemi,
+    fontSize: 11,
+    color: "#64748b",
+    textAlign: "center",
   },
   emptyWrap: {
     alignItems: "center",
@@ -214,13 +322,14 @@ const styles = StyleSheet.create({
   emptyTitle: {
     marginTop: 12,
     fontSize: 16,
-    fontWeight: "800",
+    fontFamily: Fonts.display,
     color: "#334155",
     textAlign: "center",
   },
   emptySub: {
     marginTop: 8,
     fontSize: 13,
+    fontFamily: Fonts.body,
     color: "#64748b",
     textAlign: "center",
     lineHeight: 19,

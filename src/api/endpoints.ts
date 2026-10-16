@@ -13,6 +13,8 @@ export const ERP_ANALYSIS = {
     /** Batch: all widgets for one dashboard board in one call */
     getDashboardBoardData:
       "/api/method/erp_analysis.api.get_dashboard_board_data",
+    getSalesByDivisionDrill:
+      "/api/method/erp_analysis.api.get_sales_by_division_drill",
     health: "/api/method/erp_analysis.api.health",
   },
   api: {
@@ -36,6 +38,10 @@ export const ERP_ANALYSIS = {
       "/api/method/erp_analysis.collection.get_collection_dashboard",
     getAttention:
       "/api/method/erp_analysis.collection.get_collection_attention",
+    getCustomerAdvances:
+      "/api/method/erp_analysis.collection.get_customer_advances",
+    getCustomerAdvancesCustomersChart:
+      "/api/method/erp_analysis.collection.get_customer_advances_customers_chart",
   },
   customer360: {
     get: "/api/method/erp_analysis.customer.get_customer_360",
@@ -87,6 +93,12 @@ export const ERP_ANALYSIS = {
     getPerformance:
       "/api/method/erp_analysis.sales.get_product_performance",
   },
+  sales: {
+    getItemSalesQty:
+      "/api/method/erp_analysis.sales.get_item_sales_qty",
+    getSalesByDivisionDrill:
+      "/api/method/erp_analysis.sales.get_sales_by_division_drill",
+  },
   inventory: {
     getSnapshot: "/api/method/erp_analysis.inventory.get_inventory_snapshot",
     getPerformance:
@@ -94,6 +106,10 @@ export const ERP_ANALYSIS = {
     getTrends: "/api/method/erp_analysis.inventory.get_inventory_trends",
     getRisk: "/api/method/erp_analysis.inventory.get_inventory_risk",
     getHierarchy: "/api/method/erp_analysis.inventory.get_inventory_hierarchy",
+    getItemStockByCode:
+      "/api/method/erp_analysis.inventory.get_item_stock_by_code",
+    getItemStockAndVelocity:
+      "/api/method/erp_analysis.inventory.get_item_stock_and_velocity",
   },
   receivables: {
     getDashboard:

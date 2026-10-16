@@ -19,6 +19,7 @@ type Props = {
   drillStack?: { dimension: string; label: string; value: string }[];
   onDrillBack?: () => void;
   compact?: boolean;
+  hideTitle?: boolean;
 };
 
 export function WidgetRenderer({
@@ -30,11 +31,12 @@ export function WidgetRenderer({
   drillStack,
   onDrillBack,
   compact,
+  hideTitle,
 }: Props) {
-  const mergedConfig = {
+  const mergedConfig: Record<string, unknown> = {
     ...(widget.config || {}),
     ...(data.config || {}),
-    ...(data.action ? { ...data.action, action: data.action } : {}),
+    ...(data.action ? { action: data.action } : {}),
   };
 
   const drillDepth =
@@ -78,6 +80,7 @@ export function WidgetRenderer({
       drillStack={drillStack}
       onDrillBack={onDrillBack}
       compact={compact}
+      hideTitle={hideTitle}
     />
   );
 }

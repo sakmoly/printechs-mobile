@@ -10,6 +10,7 @@
  */
 
 import type { AccessPermissionScope } from "./permissions";
+import { ALL_TERRITORIES } from "../utils/dashboardTerritory";
 
 function asTerritoryList(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -190,6 +191,33 @@ export function formatSalesScopeLabel(
  * With Allow View All Sales, include common sites so users can drill into
  * Jeddah / Riyadh / Dammam even if View Territories tags are incomplete.
  */
+/**
+ * Initial territory chip when the user has not chosen one this session.
+ * Prefer Access Profile branch, then territory field, then single-site scope.
+ */
+export function resolveProfileDefaultTerritory(
+  scope?: AccessPermissionScope | null,
+  options?: string[]
+): string {
+  const opts = options ?? getTerritoryFilterOptions(scope);
+  const pick = (raw: string | null | undefined): string | null => {
+    const t = String(raw || "").trim();
+    if (!t) return null;
+    const hit = opts.find((o) => o.toLowerCase() === t.toLowerCase());
+    return hit ?? null;
+  };
+
+  const fromBranch = pick(scope?.branch);
+  if (fromBranch) return fromBranch;
+
+  const fromTerritory = pick(scope?.territory);
+  if (fromTerritory) return fromTerritory;
+
+  if (opts.length === 1) return opts[0];
+
+  return ALL_TERRITORIES;
+}
+
 export function getTerritoryFilterOptions(
   scope?: AccessPermissionScope | null
 ): string[] {

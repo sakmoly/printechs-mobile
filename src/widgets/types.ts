@@ -96,6 +96,8 @@ export type WidgetRenderProps = {
   onDrillBack?: () => void;
   /** Compact cell in a horizontal widget_rows row */
   compact?: boolean;
+  /** Section above already shows this title — hide Shell label */
+  hideTitle?: boolean;
 };
 
 /** Normalize BA type strings to registry keys */

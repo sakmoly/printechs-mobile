@@ -3,6 +3,7 @@ import { ERP_ANALYSIS } from "./endpoints";
 import { filterBaParams } from "./apiResilience";
 import { normalizeAccessScope } from "./accessScope";
 import type { MobileConfig } from "./mobileConfig";
+import { logger } from "../utils/logger";
 
 export interface AccessObjectPermission {
   object_key: string;
@@ -100,7 +101,7 @@ export async function getMyAccess(
       Object.keys(scopeRaw).length ? scopeRaw : sanitizedScope
     );
 
-    if (__DEV__) {
+    if (__DEV__ && process.env.EXPO_PUBLIC_VERBOSE_LOGS === "1") {
       console.log("🔐 Access scope normalized:", {
         view: normalizedScope.view_territories,
         approve: normalizedScope.approve_territories,
@@ -114,7 +115,15 @@ export async function getMyAccess(
       scope: normalizedScope,
     };
   } catch (error) {
-    console.warn("⚠️ get_my_access failed, allowing all menus:", error);
+    const status = (error as { response?: { status?: number } })?.response
+      ?.status;
+    if (status === 502 || status === 503 || status === 504) {
+      logger.warn(
+        `get_my_access unavailable (HTTP ${status}) — nginx/upstream; using default scope`
+      );
+    } else {
+      logger.error("get_my_access failed:", error);
+    }
     return {
       profiles: [],
       scope: normalizeAccessScope(sanitizedScope),
@@ -129,6 +138,6 @@ export async function clearMyAccessCache(user?: string): Promise<void> {
       filterBaParams({ user })
     );
   } catch (error) {
-    console.warn("⚠️ clear_my_access_cache failed:", error);
+    logger.error("clear_my_access_cache failed:", error);
   }
 }

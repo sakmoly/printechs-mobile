@@ -11,14 +11,24 @@ import {
   TextInput,
   Animated,
   Linking,
+  ActivityIndicator,
 } from "react-native";
 import * as Notifications from "expo-notifications";
 import { useFocusEffect } from "expo-router";
 import { useApprovalsList, optimizedApis } from "../../src/hooks/useOptimizedApis";
+import {
+  approveActionErrorMessage,
+  approveSuccessAlertMessage,
+} from "../../src/utils/approveResponse";
 import type { ApprovalsData } from "../../src/api/optimized-apis";
 import { LoadingScreen } from "../../src/components/LoadingScreen";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { presentWhatsAppShare } from "../../src/utils/whatsappShare";
 
 // Configure notification behavior with custom sound
 Notifications.setNotificationHandler({
@@ -32,6 +42,7 @@ Notifications.setNotificationHandler({
 });
 
 export default function ApprovalsScreen() {
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const { data, isLoading, error, refetch } = useApprovalsList();
   const approvals = data || [];
   const [refreshing, setRefreshing] = useState(false);
@@ -99,16 +110,15 @@ export default function ApprovalsScreen() {
   }, [approvals.length, prevCount]);
 
   // Debug logging
-  useEffect(() => {
-    console.log("📋 Approvals Screen - Total approvals:", approvals.length);
-    const types = approvals.reduce((acc: any, item: any) => {
-      acc[item.doctype] = (acc[item.doctype] || 0) + 1;
-      return acc;
-    }, {});
-    console.log("📑 Document types:", types);
-    console.log("📄 Full approvals data:", JSON.stringify(approvals, null, 2));
-  }, [approvals]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
+  const [actionInProgress, setActionInProgress] = useState<{
+    type: "approve" | "reject";
+    docKey: string;
+    label: string;
+  } | null>(null);
+
+  const approvalDocKey = (item: { doctype: string; name: string }) =>
+    `${item.doctype}:${item.name}`;
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [showCreditModal, setShowCreditModal] = useState(false);
@@ -150,15 +160,28 @@ export default function ApprovalsScreen() {
           text: "Approve",
           style: "default",
           onPress: async () => {
+            setActionInProgress({
+              type: "approve",
+              docKey: approvalDocKey(item),
+              label: item.name,
+            });
             try {
-              await optimizedApis.approveDocument(item.doctype, item.name);
-              Alert.alert("Success", "Document approved successfully");
+              const result = await optimizedApis.approveDocument(
+                item.doctype,
+                item.name
+              );
+              Alert.alert(
+                "Success",
+                approveSuccessAlertMessage(result, item.doctype)
+              );
               await refetch();
-            } catch (error: any) {
+            } catch (error: unknown) {
               Alert.alert(
                 "Error",
-                error.message || "Failed to approve document"
+                approveActionErrorMessage(error, "approve")
               );
+            } finally {
+              setActionInProgress(null);
             }
           },
         },
@@ -176,34 +199,20 @@ export default function ApprovalsScreen() {
     setShowCreditModal(true);
   };
 
-  const handleSendStatement = async (item: any) => {
-    try {
-      // Get configured server URL
-      const { useAuthStore } = require("../../src/store/auth");
-      const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
+  const handleSendStatement = (item: any) => {
+    const message = `Dear ${
+      item.customer_name
+    },\n\nPlease find attached your account statement.\n\nOutstanding Amount: ${item.customer_outstanding?.toLocaleString()} SAR\nOverdue Amount: ${item.customer_overdue?.toLocaleString()} SAR\n\nThank you for your prompt attention.\n\nBest regards,\nPrintechs`;
 
-      // Generate PDF URL dynamically
-      const pdfUrl = `${serverUrl}/api/method/get_statement_pdf?customer=${item.customer}&from_date=${item.posting_date}&to_date=${item.due_date}`;
-
-      // Generate WhatsApp message
-      const message = `Dear ${
-        item.customer_name
-      },\n\nPlease find attached your account statement.\n\nOutstanding Amount: ${item.customer_outstanding?.toLocaleString()} SAR\nOverdue Amount: ${item.customer_overdue?.toLocaleString()} SAR\n\nThank you for your prompt attention.\n\nBest regards,\nPrintechs`;
-
-      // Encode URL
-      const whatsappUrl = `whatsapp://send?text=${encodeURIComponent(message)}`;
-
-      // Try to open WhatsApp
-      const canOpen = await Linking.canOpenURL(whatsappUrl);
-      if (canOpen) {
-        await Linking.openURL(whatsappUrl);
-        Alert.alert("Success", "Opening WhatsApp...");
-      } else {
-        Alert.alert("Error", "WhatsApp is not installed on this device.");
-      }
-    } catch (error: any) {
-      Alert.alert("Error", error.message || "Failed to open WhatsApp");
-    }
+    presentWhatsAppShare({
+      message,
+      customerPhone:
+        item.mobile_no ||
+        item.customer_mobile ||
+        item.mobile ||
+        item.phone,
+      customerName: item.customer_name,
+    });
   };
 
   const handleSendStatementByEmail = async (item: any) => {
@@ -244,8 +253,13 @@ export default function ApprovalsScreen() {
   };
 
   const confirmReject = async () => {
-    if (!selectedItem) return;
+    if (!selectedItem || actionInProgress) return;
 
+    setActionInProgress({
+      type: "reject",
+      docKey: approvalDocKey(selectedItem),
+      label: selectedItem.name,
+    });
     try {
       await optimizedApis.rejectDocument(
         selectedItem.doctype,
@@ -256,8 +270,10 @@ export default function ApprovalsScreen() {
       setShowRejectModal(false);
       setRejectReason("");
       await refetch();
-    } catch (error: any) {
-      Alert.alert("Error", error.message || "Failed to reject document");
+    } catch (error: unknown) {
+      Alert.alert("Error", approveActionErrorMessage(error, "reject"));
+    } finally {
+      setActionInProgress(null);
     }
   };
 
@@ -292,7 +308,7 @@ export default function ApprovalsScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <SafeScreen aboveTabBar includeTop style={styles.container}>
       <Animated.View
         style={[
           styles.headerSection,
@@ -336,7 +352,10 @@ export default function ApprovalsScreen() {
 
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: scrollPaddingBottom },
+        ]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -587,9 +606,13 @@ export default function ApprovalsScreen() {
                   {/* Action Buttons */}
                   <View style={styles.actionsContainer}>
                     <TouchableOpacity
-                      style={styles.rejectButton}
+                      style={[
+                        styles.rejectButton,
+                        actionInProgress && styles.actionButtonDisabled,
+                      ]}
                       onPress={() => handleReject(item)}
                       activeOpacity={0.7}
+                      disabled={!!actionInProgress}
                     >
                       <Ionicons
                         name="close-circle-outline"
@@ -600,9 +623,13 @@ export default function ApprovalsScreen() {
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={styles.approveButton}
+                      style={[
+                        styles.approveButton,
+                        actionInProgress && styles.actionButtonDisabled,
+                      ]}
                       onPress={() => handleApprove(item)}
                       activeOpacity={0.8}
+                      disabled={!!actionInProgress}
                     >
                       <LinearGradient
                         colors={colors.gradient as any}
@@ -903,6 +930,25 @@ export default function ApprovalsScreen() {
         </View>
       </Modal>
 
+      {/* Approve / reject in progress */}
+      <Modal visible={!!actionInProgress} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.processingCard}>
+            <ActivityIndicator size="large" color="#2563eb" />
+            <Text style={styles.processingTitle}>
+              {actionInProgress?.type === "reject"
+                ? "Submitting rejection…"
+                : "Submitting approval…"}
+            </Text>
+            <Text style={styles.processingSubtitle}>
+              {actionInProgress?.label
+                ? `${actionInProgress.label} — this can take up to a minute for invoices.`
+                : "Please wait…"}
+            </Text>
+          </View>
+        </View>
+      </Modal>
+
       {/* Reject Modal */}
       <Modal
         visible={showRejectModal}
@@ -949,7 +995,7 @@ export default function ApprovalsScreen() {
                   !rejectReason.trim() && styles.modalConfirmButtonDisabled,
                 ]}
                 onPress={confirmReject}
-                disabled={!rejectReason.trim()}
+                disabled={!rejectReason.trim() || !!actionInProgress}
               >
                 <Text style={styles.modalConfirmText}>Reject</Text>
               </TouchableOpacity>
@@ -957,7 +1003,7 @@ export default function ApprovalsScreen() {
           </View>
         </View>
       </Modal>
-    </View>
+    </SafeScreen>
   );
 }
 
@@ -1328,6 +1374,36 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.6)",
     justifyContent: "center",
     alignItems: "center",
+  },
+  processingCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 20,
+    paddingVertical: 28,
+    paddingHorizontal: 32,
+    alignItems: "center",
+    maxWidth: "85%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  processingTitle: {
+    marginTop: 16,
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#111827",
+    textAlign: "center",
+  },
+  processingSubtitle: {
+    marginTop: 8,
+    fontSize: 14,
+    color: "#6b7280",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  actionButtonDisabled: {
+    opacity: 0.45,
   },
   modalContent: {
     backgroundColor: "#ffffff",

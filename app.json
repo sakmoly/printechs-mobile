@@ -2,7 +2,7 @@
   "expo": {
     "name": "Printechs ERP Application",
     "slug": "erpnext-mobile",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "orientation": "portrait",
     "newArchEnabled": true,
     "icon": "./assets/icon.png",
@@ -14,22 +14,27 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.printechs.erpnext",
-      "buildNumber": "11",
+      "buildNumber": "5",
       "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to camera to scan QR codes",
         "NSPhotoLibraryUsageDescription": "This app needs access to photo library to select images",
         "NSLocationWhenInUseUsageDescription": "This app needs location access for territory-based features",
         "NSUserNotificationsUsageDescription": "This app needs notification permission to send you important alerts",
+        "NSContactsUsageDescription": "This app uses your contacts so you can choose who receives WhatsApp payment reminders.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         },
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["remote-notification"]
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
       },
       "config": {
         "usesNonExemptEncryption": false
@@ -42,14 +47,15 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.printechs.erpnext",
-      "versionCode": 11,
+      "versionCode": 13,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
         "WRITE_EXTERNAL_STORAGE",
         "INTERNET",
         "ACCESS_NETWORK_STATE",
-        "VIBRATE"
+        "VIBRATE",
+        "READ_CONTACTS"
       ]
     },
     "web": {
@@ -62,15 +68,12 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/notification-icon.png",
-          "color": "#ffffff",
-          "sounds": ["./assets/notification-sound.wav"]
+          "color": "#ffffff"
         }
       ],
       "expo-font"
     ],
     "notification": {
-      "icon": "./assets/notification-icon.png",
       "color": "#ffffff"
     },
     "extra": {

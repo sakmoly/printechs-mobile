@@ -56,9 +56,36 @@ export function isBaPermissionDeniedError(error: unknown): boolean {
     blob.includes("access denied") ||
     blob.includes("not permitted") ||
     blob.includes("forbidden") ||
+    blob.includes("not enabled for your mobile profile") ||
     // Some sites return bare 403 with little body
     true
   );
+}
+
+/** Short Frappe `_server_messages` / exception text for logs and UI. */
+export function extractFrappeErrorMessage(error: unknown): string | null {
+  const ax = error as { response?: { data?: any }; message?: string };
+  const data = ax?.response?.data;
+  const exception =
+    typeof data?.exception === "string" ? data.exception : "";
+  const fromExc = exception.replace(/^[\w.]+:\s*/, "").trim();
+  if (fromExc) return fromExc;
+  const raw = data?._server_messages;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      const first = Array.isArray(parsed) ? parsed[0] : parsed;
+      const obj = typeof first === "string" ? JSON.parse(first) : first;
+      const msg = String(obj?.message || "").trim();
+      if (msg) return msg;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (typeof data?.message === "string" && data.message.trim()) {
+    return data.message.trim();
+  }
+  return null;
 }
 
 /** Thrown on live when a Phase 3 BA method is missing/disabled — never inject sample figures. */

@@ -32,15 +32,19 @@ function prepare(args: unknown[]): unknown[] {
   );
 }
 
+/** Set EXPO_PUBLIC_VERBOSE_LOGS=1 to restore debug/info/warn in development. */
+const VERBOSE_LOGS =
+  __DEV__ && process.env.EXPO_PUBLIC_VERBOSE_LOGS === "1";
+
 export const logger = {
   debug(...args: unknown[]) {
-    if (__DEV__) console.log(...prepare(args));
+    if (VERBOSE_LOGS) console.log(...prepare(args));
   },
   info(...args: unknown[]) {
-    if (__DEV__) console.log(...prepare(args));
+    if (VERBOSE_LOGS) console.log(...prepare(args));
   },
   warn(...args: unknown[]) {
-    console.warn(...prepare(args));
+    if (VERBOSE_LOGS) console.warn(...prepare(args));
   },
   error(...args: unknown[]) {
     console.error(...prepare(args));

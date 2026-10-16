@@ -316,17 +316,27 @@ async function fromProductPerformance(
   if (!level) return null;
 
   const filters = req.filters || {};
-  const data = await fetchProductPerformance({
-    company: req.company,
-    from_date: req.from_date,
-    to_date: req.to_date,
-    period: req.period,
-    level,
-    territory: String(filters.territory || "") || undefined,
-    division: String(filters.division || "") || undefined,
-    brand: String(filters.brand || "") || undefined,
-    item_group: String(filters.item_group || "") || undefined,
-  });
+  const territoryRaw = filters.territory;
+  const territory = Array.isArray(territoryRaw)
+    ? String(territoryRaw[0] || "").trim() || undefined
+    : String(territoryRaw || "").trim() || undefined;
+
+  let data;
+  try {
+    data = await fetchProductPerformance({
+      company: req.company,
+      from_date: req.from_date,
+      to_date: req.to_date,
+      period: req.period,
+      level,
+      territory,
+      division: String(filters.division || "") || undefined,
+      brand: String(filters.brand || "") || undefined,
+      item_group: String(filters.item_group || "") || undefined,
+    });
+  } catch {
+    return null;
+  }
 
   const rows: AnalysisRow[] = (data.rows || []).map((r) => ({
     id: r.id,

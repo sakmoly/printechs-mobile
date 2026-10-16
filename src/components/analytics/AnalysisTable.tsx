@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -247,6 +247,45 @@ function primaryValueFormat(columns?: TableColumn[] | null): string {
   return col?.format || "currency_compact";
 }
 
+/** Rank / row-number columns from Desk/API (avoid doubling with local "#"). */
+function isIndexColumn(c: TableColumn): boolean {
+  const key = String(c.key || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+  const label = String(c.label || "")
+    .toLowerCase()
+    .trim();
+  return (
+    key === "#" ||
+    key === "rank" ||
+    key === "row_num" ||
+    key === "row_number" ||
+    key === "rowno" ||
+    key === "no" ||
+    key === "idx" ||
+    key === "index" ||
+    key === "sr" ||
+    key === "sno" ||
+    label === "#" ||
+    label === "rank" ||
+    label === "no" ||
+    label === "no." ||
+    label === "sr#"
+  );
+}
+
+/** Keep at most one index column from BA/Desk config. */
+function dedupeIndexColumns(columns: TableColumn[]): TableColumn[] {
+  let seenIndex = false;
+  return columns.filter((c) => {
+    if (!isIndexColumn(c)) return true;
+    if (seenIndex) return false;
+    seenIndex = true;
+    return true;
+  });
+}
+
 function CellBox({
   col,
   children,
@@ -277,17 +316,14 @@ export function AnalysisTable({
   const currencyDisplay = currency_display ?? { show_symbol: false };
   const totalFormat = useMemo(() => primaryValueFormat(columns), [columns]);
   const valueCol = useMemo(() => primaryValueColumn(columns), [columns]);
-
-  useEffect(() => {
-    if (!__DEV__) return;
-    console.log("[AnalysisTable]", {
-      columnCount: columns?.length || 0,
-      keys: (columns || []).map(
-        (c) =>
-          `${c.key}:flex=${c.flex ?? "-"}:w=${c.width ?? "-"}:min=${c.min_width ?? "-"}`
-      ),
-    });
-  }, [columns]);
+  const displayColumns = useMemo(
+    () => (columns?.length ? dedupeIndexColumns(columns) : columns),
+    [columns]
+  );
+  const showSyntheticIndex = useMemo(
+    () => !(displayColumns || []).some(isIndexColumn),
+    [displayColumns]
+  );
 
   if (!rows.length) {
     return (
@@ -297,7 +333,7 @@ export function AnalysisTable({
     );
   }
 
-  const useColumns = Array.isArray(columns) && columns.length > 0;
+  const useColumns = Array.isArray(displayColumns) && displayColumns.length > 0;
 
   const renderConfiguredRow = (
     r: AnalysisRow,
@@ -311,12 +347,14 @@ export function AnalysisTable({
         !isHeader && i % 2 === 1 && styles.rowAlt,
       ]}
     >
-      <View style={styles.colNameBox}>
-        <Text style={[styles.cell, isHeader && styles.headerText]}>
-          {isHeader ? "#" : String(i + 1)}
-        </Text>
-      </View>
-      {columns!.map((c) => {
+      {showSyntheticIndex ? (
+        <View style={styles.colNameBox}>
+          <Text style={[styles.cell, isHeader && styles.headerText]}>
+            {isHeader ? "#" : String(i + 1)}
+          </Text>
+        </View>
+      ) : null}
+      {displayColumns!.map((c) => {
         if (isHeader) {
           return (
             <CellBox key={c.key} col={c} textStyle={styles.headerText}>
@@ -328,6 +366,12 @@ export function AnalysisTable({
           String(c.format || c.key)
         );
         const pctVal = Number(rawCell(r, c) ?? r.change_pct);
+        const isIdx = isIndexColumn(c);
+        const raw = rawCell(r, c);
+        const display =
+          isIdx && (raw == null || raw === "")
+            ? String(i + 1)
+            : cellValue(r, c, currency, currencyDisplay);
         return (
           <CellBox
             key={c.key}
@@ -343,7 +387,7 @@ export function AnalysisTable({
                 : null,
             ]}
           >
-            {cellValue(r, c, currency, currencyDisplay)}
+            {display}
           </CellBox>
         );
       })}
@@ -374,8 +418,8 @@ export function AnalysisTable({
           </ScrollView>
           {total != null && Number.isFinite(Number(total)) ? (
             <View style={[styles.row, styles.footerRow]}>
-              <View style={styles.colNameBox} />
-              {columns!.map((c, ci) => {
+              {showSyntheticIndex ? <View style={styles.colNameBox} /> : null}
+              {displayColumns!.map((c, ci) => {
                 if (valueCol?.key === c.key) {
                   return (
                     <CellBox key={c.key} col={c} textStyle={styles.footerValue}>
@@ -387,11 +431,11 @@ export function AnalysisTable({
                   );
                 }
                 const labelColKey =
-                  columns!.find((x) =>
+                  displayColumns!.find((x) =>
                     /territory|name|label|customer|brand|dimension/i.test(
                       x.key
                     )
-                  )?.key || columns![0]?.key;
+                  )?.key || displayColumns![0]?.key;
                 if (c.key === labelColKey) {
                   return (
                     <CellBox key={c.key} col={c} textStyle={styles.footerLabel}>

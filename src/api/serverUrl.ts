@@ -8,15 +8,14 @@
 
 /** Hosts that are known-broken or alias to the real ERP site */
 const HOST_ALIASES: Record<string, string> = {
-  // Apex host often fails TLS / doesn't serve ERPNext — use www
-  "printechs.com": "https://www.printechs.com",
-  // erp.printechs.com has an untrusted/broken TLS cert → Network Error on device
-  "erp.printechs.com": "https://www.printechs.com",
-  "www.erp.printechs.com": "https://www.printechs.com",
-  // support.printechs.com is not an ERPNext site (TLS name mismatch +
-  // nginx "support.printechs.com does not exist") — use live ERP host
-  "support.printechs.com": "https://www.printechs.com",
-  "www.support.printechs.com": "https://www.printechs.com",
+  // www redirects (301) and breaks OAuth password POST — use apex ERP host
+  "www.printechs.com": "https://printechs.com",
+  // erp subdomain serves marketing on / but ERP API on /api; apex is the stable login origin
+  "erp.printechs.com": "https://printechs.com",
+  "www.erp.printechs.com": "https://printechs.com",
+  // support.printechs.com is not an ERPNext site — use live ERP host
+  "support.printechs.com": "https://printechs.com",
+  "www.support.printechs.com": "https://printechs.com",
 };
 
 export type NormalizedServerUrl = {

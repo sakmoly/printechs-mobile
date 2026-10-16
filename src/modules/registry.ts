@@ -1,7 +1,6 @@
 /**
- * Safe local module registry.
- * Server may send module key / label / enabled / sort_order —
- * never execute remote React paths or arbitrary URLs as routes.
+ * Safe local module registry — system / tools only.
+ * Business dashboards come from Desk bootstrap (dashboard / board_tabs / report_list).
  */
 
 import type { ComponentProps } from "react";
@@ -31,8 +30,8 @@ export type ModuleRegistryEntry = {
 };
 
 /**
- * Known business modules the binary ships with.
- * Unknown server keys are ignored (or flagged "App update required").
+ * Built-in app surfaces (tabs, CRM helper, analysis drill).
+ * Unknown Desk module keys open as Access Profile boards (see resolveHubItems).
  */
 export const moduleRegistry: Record<string, ModuleRegistryEntry> = {
   home: {
@@ -68,46 +67,6 @@ export const moduleRegistry: Record<string, ModuleRegistryEntry> = {
     configModule: "settings",
     hideFromHub: true,
   },
-  sales: {
-    route: "/sales-dashboard",
-    icon: "trending-up",
-    color: "#667eea",
-    defaultLabel: "Sales",
-    defaultSubtitle: "YTD performance",
-    section: "sales",
-    hubFeatureId: "sales",
-    configModule: "sales",
-  },
-  salesperson: {
-    route: "/salesperson-performance",
-    icon: "people",
-    color: "#8b5cf6",
-    defaultLabel: "Salespersons",
-    defaultSubtitle: "Ranking & drill-down",
-    section: "sales",
-    hubFeatureId: "salesperson",
-    configModule: "salesperson",
-  },
-  product_performance: {
-    route: "/product-performance",
-    icon: "cube",
-    color: "#a855f7",
-    defaultLabel: "Products",
-    defaultSubtitle: "Division → brand → item",
-    section: "sales",
-    hubFeatureId: "product",
-    configModule: "product_performance",
-  },
-  product: {
-    route: "/product-performance",
-    icon: "cube",
-    color: "#a855f7",
-    defaultLabel: "Products",
-    defaultSubtitle: "Division → brand → item",
-    section: "sales",
-    hubFeatureId: "product",
-    configModule: "product_performance",
-  },
   customer_360: {
     route: "/customer-360",
     icon: "person-circle",
@@ -117,96 +76,6 @@ export const moduleRegistry: Record<string, ModuleRegistryEntry> = {
     section: "sales",
     hubFeatureId: "customer360",
     configModule: "customer_360",
-  },
-  sales_orders: {
-    route: "/sales-order-dashboard",
-    icon: "clipboard",
-    color: "#7c3aed",
-    defaultLabel: "Sales Orders",
-    defaultSubtitle: "Order book",
-    section: "sales",
-    hubFeatureId: "salesOrders",
-    configModule: "sales_orders",
-  },
-  profitability: {
-    route: "/profitability-dashboard",
-    icon: "pie-chart",
-    color: "#059669",
-    defaultLabel: "Profitability",
-    defaultSubtitle: "GP & margins",
-    section: "sales",
-    hubFeatureId: "profitability",
-    configModule: "profitability",
-  },
-  receivables: {
-    route: "/receivables-dashboard",
-    icon: "wallet",
-    color: "#0ea5e9",
-    defaultLabel: "Receivables",
-    defaultSubtitle: "Aging & DSO",
-    section: "finance",
-    hubFeatureId: "receivables",
-    configModule: "receivables",
-  },
-  collection: {
-    route: "/collection-dashboard",
-    icon: "cash",
-    color: "#0284c7",
-    defaultLabel: "Collection",
-    defaultSubtitle: "Actuals & attention",
-    section: "finance",
-    hubFeatureId: "collection",
-    configModule: "collection",
-  },
-  payables: {
-    route: "/payables-dashboard",
-    icon: "card",
-    color: "#ef4444",
-    defaultLabel: "Payables",
-    defaultSubtitle: "AP & payment plan",
-    section: "finance",
-    hubFeatureId: "payables",
-    configModule: "payables",
-  },
-  inventory: {
-    route: "/inventory-dashboard",
-    icon: "layers",
-    color: "#10b981",
-    defaultLabel: "Inventory",
-    defaultSubtitle: "Stock & hierarchy",
-    section: "operations",
-    hubFeatureId: "inventory",
-    configModule: "inventory",
-  },
-  inventory_health: {
-    route: "/inventory-health",
-    icon: "fitness",
-    color: "#059669",
-    defaultLabel: "Inv. Health",
-    defaultSubtitle: "Cover & dead stock",
-    section: "operations",
-    hubFeatureId: "inventoryHealth",
-    configModule: "inventory_health",
-  },
-  purchase: {
-    route: "/purchase-performance-dashboard",
-    icon: "cart",
-    color: "#f97316",
-    defaultLabel: "Purchase",
-    defaultSubtitle: "PO performance",
-    section: "operations",
-    hubFeatureId: "purchase",
-    configModule: "purchase",
-  },
-  exceptions: {
-    route: "/exceptions-dashboard",
-    icon: "warning",
-    color: "#ea580c",
-    defaultLabel: "Exceptions",
-    defaultSubtitle: "Management alerts",
-    section: "insights",
-    hubFeatureId: "exceptions",
-    configModule: "exceptions",
   },
   analytics: {
     route: "/generic-analysis",
@@ -228,16 +97,6 @@ export const moduleRegistry: Record<string, ModuleRegistryEntry> = {
     hubFeatureId: "analytics",
     configModule: "analytics",
   },
-  approval_analytics: {
-    route: "/approval-analytics",
-    icon: "stats-chart",
-    color: "#6366f1",
-    defaultLabel: "Approval stats",
-    defaultSubtitle: "Cycle time & SLA",
-    section: "insights",
-    hubFeatureId: "approvalAnalytics",
-    configModule: "approval_analytics",
-  },
   employees: {
     route: "/(tabs)/employees",
     icon: "people-outline",
@@ -257,29 +116,6 @@ export const moduleRegistry: Record<string, ModuleRegistryEntry> = {
     hubFeatureId: "catalogue",
     configModule: "catalogue",
     phase2: "catalogue",
-  },
-  /** Future industries — registered so BA can enable without a crash; screens may land later */
-  fashion: {
-    route: "/fashion-dashboard",
-    icon: "color-palette",
-    color: "#db2777",
-    defaultLabel: "Fashion",
-    defaultSubtitle: "Season & sell-through",
-    section: "sales",
-    hubFeatureId: "fashion",
-    configModule: "fashion",
-    shipped: false,
-  },
-  retail: {
-    route: "/retail-dashboard",
-    icon: "storefront",
-    color: "#0d9488",
-    defaultLabel: "Retail",
-    defaultSubtitle: "Store analytics",
-    section: "operations",
-    hubFeatureId: "retail",
-    configModule: "retail",
-    shipped: false,
   },
   executive: {
     route: "/(tabs)",
@@ -318,7 +154,8 @@ export function describeUnknownModule(key: string): {
 } {
   const entry = resolveModuleEntry(key);
   if (!entry) {
-    return { known: false, shipped: false, updateRequired: true };
+    // Backend boards are not in the local registry — treat as known/shipped
+    return { known: true, shipped: true, updateRequired: false };
   }
   const shipped = entry.shipped !== false;
   return {

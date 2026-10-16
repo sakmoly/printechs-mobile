@@ -149,7 +149,7 @@ export function getDemoExceptionsDashboard(): ExceptionsDashboard {
         metric_value: 290000,
         party: "Fadeco-Arabian Food & Dairy",
         party_id: "CUST-FADECO",
-        route: "/collection-dashboard",
+        route: "/dashboard-board/collection",
         detected_at: "2026-08-05",
       },
       {
@@ -162,7 +162,7 @@ export function getDemoExceptionsDashboard(): ExceptionsDashboard {
         metric_label: "days",
         party: "A4 Paper Ream",
         party_id: "ITEM-100",
-        route: "/inventory-health",
+        route: "/dashboard-board/inventory_health",
         detected_at: "2026-08-05",
       },
       {
@@ -185,7 +185,7 @@ export function getDemoExceptionsDashboard(): ExceptionsDashboard {
         message: "Open sales order overdue for delivery",
         metric_value: 185000,
         reference: "SO-2608-0012",
-        route: "/sales-order-dashboard",
+        route: "/dashboard-board/sales_orders",
         detected_at: "2026-08-04",
       },
       {
@@ -196,7 +196,7 @@ export function getDemoExceptionsDashboard(): ExceptionsDashboard {
         message: "Supplier bill past due",
         metric_value: 125000,
         party: "ABC Suppliers",
-        route: "/payables-dashboard",
+        route: "/dashboard-board/payables",
         detected_at: "2026-08-03",
       },
       {
@@ -206,7 +206,7 @@ export function getDemoExceptionsDashboard(): ExceptionsDashboard {
         severity: "medium",
         message: "Non-moving stock > 5% of inventory value",
         metric_value: 980000,
-        route: "/inventory-health",
+        route: "/dashboard-board/inventory_health",
         detected_at: "2026-08-02",
       },
       {

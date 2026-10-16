@@ -11,11 +11,16 @@ import {
 import { router } from "expo-router";
 import { useEmployeesList } from "../../src/hooks/useOptimizedApis";
 import { LoadingScreen } from "../../src/components/LoadingScreen";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuthStore } from "../../src/store/auth";
 import { isDimensionEnabled } from "../../src/api/mobileConfig";
 
 export default function EmployeesScreen() {
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const { data: employees, isLoading, refetch } = useEmployeesList();
   const [refreshing, setRefreshing] = React.useState(false);
   const showDepartment = isDimensionEnabled(
@@ -42,10 +47,14 @@ export default function EmployeesScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <SafeScreen aboveTabBar includeTop style={styles.container}>
       <FlatList
         data={employees}
         keyExtractor={(item) => item.name}
+        contentContainerStyle={[
+          styles.list,
+          { paddingBottom: scrollPaddingBottom },
+        ]}
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.card}
@@ -98,7 +107,7 @@ export default function EmployeesScreen() {
           </View>
         }
       />
-    </View>
+    </SafeScreen>
   );
 }
 

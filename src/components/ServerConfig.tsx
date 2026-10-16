@@ -124,7 +124,7 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
     ) {
       Alert.alert(
         "Invalid URL",
-        "URL must start with http:// or https://\n\nExamples:\n• https://www.printechs.com\n• https://erp.example.com\n• http://192.168.1.100:8000"
+        "URL must start with http:// or https://\n\nExamples:\n• https://printechs.com\n• https://erp.example.com\n• http://192.168.1.100:8000"
       );
       return;
     }
@@ -213,17 +213,17 @@ export const ServerConfig: React.FC<ServerConfigProps> = ({ onSave }) => {
           style={styles.input}
           value={serverUrl}
           onChangeText={setServerUrl}
-          placeholder="https://www.printechs.com"
+          placeholder="https://printechs.com"
           placeholderTextColor="#9ca3af"
           keyboardType="url"
           autoCapitalize="none"
           autoCorrect={false}
         />
         <Text style={styles.helpText}>
-          Live Printechs: https://www.printechs.com{"\n"}
-          Do not use support.printechs.com or erp.printechs.com (not the ERP
-          site).{"\n"}
-          Examples:{"\n"}• https://www.printechs.com{"\n"}•
+          Live Printechs: https://printechs.com{"\n"}
+          erp.printechs.com is remapped automatically (use apex URL above). Do
+          not use support.printechs.com.{"\n"}
+          Examples:{"\n"}• https://printechs.com{"\n"}•
           https://erp.example.com{"\n"}• http://192.168.1.100:8000
         </Text>
       </View>

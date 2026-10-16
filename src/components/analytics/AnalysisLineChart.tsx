@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -7,11 +7,18 @@ import {
   ScrollView,
   TouchableOpacity,
 } from "react-native";
-import { LineChart } from "react-native-chart-kit";
+import Svg, {
+  Circle,
+  G,
+  Line,
+  Path,
+  Rect,
+  Text as SvgText,
+} from "react-native-svg";
 import { Fonts, Type } from "../../theme/typography";
 import type { AnalysisRow } from "../../api/genericAnalysisTypes";
+import { formatCurrency } from "../../utils/currency";
 import {
-  colorWithOpacity,
   resolveChartColors,
   type ResolvedChartColors,
 } from "../../widgets/chartColors";
@@ -24,20 +31,119 @@ type Props = {
   onPointPress?: (row: AnalysisRow) => void;
   chartColors?: ResolvedChartColors;
   config?: Record<string, unknown> | null;
+  /** Hide month value cards under the chart (receivables trend mockup). */
+  showValueCards?: boolean;
+  /** Skip outer card chrome when nested inside another panel */
+  embedded?: boolean;
+  legendCurrentLabel?: string;
+  legendLyLabel?: string;
+  /** Always show TY/LY legend when compare mode is on (even if LY values are zero). */
+  forceShowLyLegend?: boolean;
 };
 
-const chartWidth = Dimensions.get("window").width - 48;
+/** Smooth line through points (no area fill). */
+function smoothLinePath(points: { x: number; y: number }[]): string {
+  if (!points.length) return "";
+  if (points.length === 1) {
+    return `M ${points[0].x} ${points[0].y}`;
+  }
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const cpx = (prev.x + curr.x) / 2;
+    d += ` C ${cpx} ${prev.y}, ${cpx} ${curr.y}, ${curr.x} ${curr.y}`;
+  }
+  return d;
+}
 
+const SCREEN_W = Dimensions.get("window").width;
+const CHART_PAD = { top: 24, right: 16, bottom: 36, left: 44 };
+const PLOT_H = 168;
+const POINT_STEP = 72;
+
+function compactVal(n: number, currency: string): string {
+  return formatCurrency(n, currency, { compact: true, hideCode: true });
+}
+
+function shortLabel(label: string, max = 10): string {
+  const t = String(label || "").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
+/**
+ * Mobile-polished LINE chart (SVG). Backend supplies series values only —
+ * stroke, dots, grid, and compact labels are client-side.
+ */
 export function AnalysisLineChart({
   rows,
+  currency = "SAR",
   title = "",
-  maxPoints = 10,
+  maxPoints = 12,
   onPointPress,
   chartColors,
   config,
+  showValueCards = true,
+  embedded = false,
+  legendCurrentLabel = "Current",
+  legendLyLabel = "Last year",
+  forceShowLyLegend = false,
 }: Props) {
-  const colors = chartColors || resolveChartColors(config);
-  const slice = rows.slice(0, maxPoints);
+  const colors = useMemo(() => {
+    const fromConfig = resolveChartColors(config);
+    if (!chartColors) return fromConfig;
+    return {
+      ...fromConfig,
+      ...chartColors,
+      sliceColors: chartColors.sliceColors?.length
+        ? chartColors.sliceColors
+        : fromConfig.sliceColors,
+    };
+  }, [chartColors, config]);
+  const slice = useMemo(() => rows.slice(0, maxPoints), [rows, maxPoints]);
+
+  const hasLyData = slice.some(
+    (r) => r.previous != null && Number.isFinite(Number(r.previous))
+  );
+  const hasLy = hasLyData || forceShowLyLegend;
+
+  const values = slice.map((r) => Math.max(0, Number(r.value) || 0));
+  const lyValues = slice.map((r) =>
+    r.previous != null && Number.isFinite(Number(r.previous))
+      ? Math.max(0, Number(r.previous) || 0)
+      : 0
+  );
+  const maxVal = Math.max(
+    1,
+    ...values,
+    ...(hasLyData ? lyValues : [0])
+  );
+
+  const layout = useMemo(() => {
+    const plotW = Math.max(
+      SCREEN_W - 72,
+      Math.max(1, slice.length - 1) * POINT_STEP + POINT_STEP
+    );
+    const toY = (v: number) =>
+      CHART_PAD.top + PLOT_H - (Math.max(0, v) / maxVal) * PLOT_H;
+    const toX = (i: number) => {
+      if (slice.length <= 1) return CHART_PAD.left + plotW / 2;
+      return CHART_PAD.left + (i / (slice.length - 1)) * plotW;
+    };
+    const currentPts = values.map((v, i) => ({ x: toX(i), y: toY(v) }));
+    const lyPts = lyValues.map((v, i) => ({ x: toX(i), y: toY(v) }));
+    return { plotW, currentPts, lyPts };
+  }, [slice.length, values, lyValues, maxVal]);
+
+  const { plotW, currentPts, lyPts } = layout;
+  const chartH = CHART_PAD.top + PLOT_H + CHART_PAD.bottom;
+  const chartW = CHART_PAD.left + plotW + CHART_PAD.right;
+  const toY = (v: number) =>
+    CHART_PAD.top + PLOT_H - (Math.max(0, v) / maxVal) * PLOT_H;
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => t * maxVal);
+
   if (!slice.length) {
     return (
       <View style={styles.empty}>
@@ -46,112 +152,179 @@ export function AnalysisLineChart({
     );
   }
 
-  const labels = slice.map((r) =>
-    r.label.length > 8 ? `${r.label.slice(0, 7)}…` : r.label
-  );
-  const values = slice.map((r) => Math.max(0, Number(r.value) || 0));
-  const lyValues = slice.map((r) =>
-    r.previous != null ? Math.max(0, Number(r.previous) || 0) : 0
-  );
-  const hasLy = slice.some(
-    (r) => r.previous != null && Number.isFinite(Number(r.previous))
-  );
-
-  const datasets = hasLy
-    ? [
-        {
-          data: values.length ? values : [0],
-          color: (opacity = 1) => colorWithOpacity(colors.current, opacity),
-          strokeWidth: 2,
-        },
-        {
-          data: lyValues.length ? lyValues : [0],
-          color: (opacity = 1) => colorWithOpacity(colors.ly, opacity),
-          strokeWidth: 2,
-        },
-      ]
-    : [
-        {
-          data: values.length ? values : [0],
-          color: (opacity = 1) => colorWithOpacity(colors.current, opacity),
-          strokeWidth: 2,
-        },
-      ];
-
   return (
-    <View style={styles.card}>
+    <View style={embedded ? styles.embedded : styles.card}>
       {title ? <Text style={styles.title}>{title}</Text> : null}
+
       {hasLy ? (
         <View style={styles.legendRow}>
           <View style={styles.legendItem}>
-            <View
-              style={[styles.swatch, { backgroundColor: colors.current }]}
-            />
-            <Text style={styles.legendText}>Current</Text>
+            <View style={[styles.lineSwatch, { backgroundColor: colors.current }]} />
+            <Text style={styles.legendText}>{legendCurrentLabel}</Text>
           </View>
           <View style={styles.legendItem}>
-            <View style={[styles.swatch, { backgroundColor: colors.ly }]} />
-            <Text style={styles.legendText}>LY</Text>
+            <View style={[styles.lineSwatchLy, { backgroundColor: colors.ly }]} />
+            <Text style={styles.legendText}>{legendLyLabel}</Text>
           </View>
         </View>
       ) : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <LineChart
-          data={{
-            labels,
-            datasets,
-          }}
-          width={Math.max(chartWidth, labels.length * 56)}
-          height={220}
-          yAxisLabel=""
-          yAxisSuffix=""
-          chartConfig={{
-            backgroundColor: "#ffffff",
-            backgroundGradientFrom: "#ffffff",
-            backgroundGradientTo: "#ffffff",
-            decimalPlaces: 0,
-            color: (opacity = 1) => colorWithOpacity(colors.current, opacity),
-            labelColor: (opacity = 1) => `rgba(71, 85, 105, ${opacity})`,
-            propsForDots: {
-              r: "4",
-              strokeWidth: "2",
-              stroke: colors.current,
-            },
-            propsForBackgroundLines: {
-              stroke: "#e2e8f0",
-            },
-          }}
-          style={styles.chart}
-          bezier
-          fromZero
-          withInnerLines
-          withOuterLines
-          onDataPointClick={
-            onPointPress
-              ? (p: { index?: number }) => {
-                  const row = slice[p.index ?? -1];
-                  if (row) onPointPress(row);
-                }
-              : undefined
-          }
-        />
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.scrollInner}
+      >
+        <Svg width={chartW} height={chartH}>
+          <Rect
+            x={CHART_PAD.left}
+            y={CHART_PAD.top}
+            width={plotW}
+            height={PLOT_H}
+            rx={12}
+            fill="#f8fafc"
+          />
+
+          {yTicks.map((tick, ti) => {
+            const y = toY(tick);
+            return (
+              <G key={`yt-${ti}`}>
+                <Line
+                  x1={CHART_PAD.left + 4}
+                  y1={y}
+                  x2={CHART_PAD.left + plotW - 4}
+                  y2={y}
+                  stroke="#e2e8f0"
+                  strokeWidth={1}
+                  strokeDasharray={ti === 0 ? undefined : "4 4"}
+                />
+                <SvgText
+                  x={CHART_PAD.left - 6}
+                  y={y + 3}
+                  fill="#94a3b8"
+                  fontSize="9"
+                  fontFamily={Fonts.body}
+                  textAnchor="end"
+                >
+                  {compactVal(tick, currency)}
+                </SvgText>
+              </G>
+            );
+          })}
+
+          {hasLy && lyPts.length > 1 && hasLyData ? (
+            <Path
+              d={smoothLinePath(lyPts)}
+              fill="none"
+              stroke={colors.ly}
+              strokeWidth={2}
+              strokeDasharray="6 4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.85}
+            />
+          ) : null}
+
+          {currentPts.length > 1 ? (
+            <Path
+              d={smoothLinePath(currentPts)}
+              fill="none"
+              stroke={colors.current}
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ) : null}
+
+          {hasLyData
+            ? lyPts.map((p, i) => (
+                <Circle
+                  key={`ly-dot-${i}`}
+                  cx={p.x}
+                  cy={p.y}
+                  r={4}
+                  fill="#fff"
+                  stroke={colors.ly}
+                  strokeWidth={2}
+                />
+              ))
+            : null}
+
+          {currentPts.map((p, i) => {
+            const isFirst = i === 0;
+            const isLast = i === slice.length - 1;
+            const anchor = isFirst ? "start" : isLast ? "end" : "middle";
+            const labelX = isFirst ? p.x + 2 : isLast ? p.x - 2 : p.x;
+            return (
+            <G key={`pt-${i}`}>
+              <Circle
+                cx={p.x}
+                cy={p.y}
+                r={6}
+                fill="#fff"
+                stroke={colors.current}
+                strokeWidth={2.5}
+              />
+              <Circle cx={p.x} cy={p.y} r={3} fill={colors.current} />
+              <SvgText
+                x={labelX}
+                y={CHART_PAD.top + PLOT_H + 16}
+                fill="#64748b"
+                fontSize="10"
+                fontFamily={Fonts.bodySemi}
+                textAnchor={anchor}
+              >
+                {shortLabel(slice[i].label, 9)}
+              </SvgText>
+            </G>
+          );
+          })}
+        </Svg>
       </ScrollView>
-      {onPointPress ? (
-        <View style={styles.tapList}>
-          {slice.map((r, i) => (
-            <TouchableOpacity
-              key={`${r.id}-${i}`}
-              style={styles.tapRow}
-              onPress={() => onPointPress(r)}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.tapLabel} numberOfLines={1}>
-                {r.label}
+
+      {showValueCards ? (
+      <View style={styles.valueGrid}>
+        {slice.map((r, i) => {
+          const v = values[i];
+          const ly = lyValues[i];
+          const body = (
+            <View style={styles.valueCard}>
+              <View style={styles.valueTop}>
+                <View
+                  style={[styles.dot, { backgroundColor: colors.current }]}
+                />
+                <Text style={styles.valueLabel} numberOfLines={1}>
+                  {r.label}
+                </Text>
+              </View>
+              <Text style={styles.valuePrimary}>
+                {compactVal(v, currency)}
               </Text>
-              <Text style={styles.tapHint}>Drill ›</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+              {hasLy ? (
+                <Text style={styles.valueLy}>
+                  LY {compactVal(ly, currency)}
+                </Text>
+              ) : null}
+            </View>
+          );
+          if (onPointPress) {
+            return (
+              <TouchableOpacity
+                key={`vc-${r.id}-${i}`}
+                activeOpacity={0.85}
+                onPress={() => onPointPress(r)}
+                style={styles.valueCardWrap}
+              >
+                {body}
+              </TouchableOpacity>
+            );
+          }
+          return (
+            <View key={`vc-${r.id}-${i}`} style={styles.valueCardWrap}>
+              {body}
+            </View>
+          );
+        })}
+      </View>
       ) : null}
     </View>
   );
@@ -160,63 +333,108 @@ export function AnalysisLineChart({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: "#fff",
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 16,
+    paddingTop: 10,
+    paddingBottom: 12,
+    paddingHorizontal: 10,
     borderWidth: 1,
-    borderColor: "#e0f2fe",
+    borderColor: "#eef2ff",
     marginBottom: 12,
+    overflow: "hidden",
+  },
+  embedded: {
+    backgroundColor: "transparent",
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingHorizontal: 0,
+    marginBottom: 0,
+    overflow: "visible",
   },
   title: {
     ...Type.cardTitle,
     color: "#1f2937",
-    marginBottom: 8,
+    marginBottom: 6,
+    paddingHorizontal: 4,
   },
   legendRow: {
     flexDirection: "row",
-    gap: 14,
-    marginBottom: 6,
+    gap: 16,
+    marginBottom: 4,
+    paddingHorizontal: 6,
   },
   legendItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
-  swatch: {
-    width: 10,
-    height: 10,
+  lineSwatch: {
+    width: 18,
+    height: 3,
     borderRadius: 2,
+  },
+  lineSwatchLy: {
+    width: 18,
+    height: 3,
+    borderRadius: 2,
+    opacity: 0.65,
   },
   legendText: {
     fontFamily: Fonts.body,
     fontSize: 11,
     color: "#64748b",
   },
-  chart: {
-    borderRadius: 8,
-    marginLeft: -8,
+  scrollInner: {
+    paddingVertical: 4,
+    paddingHorizontal: 6,
   },
-  tapList: {
+  valueGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
     marginTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#e2e8f0",
-    paddingTop: 6,
+    paddingHorizontal: 2,
   },
-  tapRow: {
+  valueCardWrap: {
+    width: "47%",
+    flexGrow: 1,
+    maxWidth: "48.5%",
+    minWidth: "45%",
+  },
+  valueCard: {
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: "#eef2ff",
+  },
+  valueTop: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 6,
+    gap: 6,
+    marginBottom: 4,
   },
-  tapLabel: {
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  valueLabel: {
     flex: 1,
     fontFamily: Fonts.bodySemi,
-    fontSize: 12,
-    color: "#334155",
+    fontSize: 11,
+    color: "#64748b",
   },
-  tapHint: {
+  valuePrimary: {
+    fontFamily: Fonts.display,
+    fontSize: 16,
+    color: "#0f172a",
+  },
+  valueLy: {
     fontFamily: Fonts.body,
     fontSize: 11,
-    color: "#0ea5e9",
+    color: "#94a3b8",
+    marginTop: 2,
   },
   empty: {
     padding: 24,

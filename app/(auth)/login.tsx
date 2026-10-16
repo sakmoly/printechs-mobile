@@ -23,10 +23,15 @@ import { ServerConfig } from "../../src/components/ServerConfig";
 import { OTPInput } from "../../src/components/OTPInput";
 import { oauthApi } from "../../src/api/oauth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 
 type LoginStep = "credentials" | "otp";
 
 export default function LoginScreen() {
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: false });
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -271,6 +276,7 @@ export default function LoginScreen() {
   };
 
   return (
+    <SafeScreen includeTop edges={[]} style={styles.flex}>
     <LinearGradient
       colors={["#667eea", "#764ba2"]}
       style={styles.container}
@@ -284,7 +290,10 @@ export default function LoginScreen() {
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.scrollContainer}
+          contentContainerStyle={[
+            styles.scrollContainer,
+            { paddingBottom: scrollPaddingBottom },
+          ]}
         >
           <View style={styles.content}>
             <View style={styles.header}>
@@ -534,10 +543,12 @@ export default function LoginScreen() {
         </View>
       </Modal>
     </LinearGradient>
+    </SafeScreen>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   container: { flex: 1 },
   keyboardView: { flex: 1 },
   scrollContainer: {
@@ -545,7 +556,6 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 24,
     paddingTop: 24,
-    paddingBottom: Platform.OS === "ios" ? 160 : 80,
   },
   content: { flex: 1, justifyContent: "space-between" },
   header: { alignItems: "center", marginTop: 24 },

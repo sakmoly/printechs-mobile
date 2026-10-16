@@ -13,6 +13,10 @@ import { ExpandableDashboardCard } from "../../src/components/ExpandableDashboar
 import { useRouter } from "expo-router";
 import { optimizedApis } from "../../src/api/optimized-apis";
 import { http } from "../../src/api/http";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../src/components/SafeScreen";
 
 type CatalogueCategory = {
   key: string;
@@ -108,6 +112,7 @@ type CatalogueItem = {
 };
 
 export default function ECatalogueScreen() {
+  const { scrollPaddingBottom } = useSafeScreenInsets({ aboveTabBar: true });
   const router = useRouter();
   const [catalogues, setCatalogues] = useState<CatalogueItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -261,7 +266,7 @@ export default function ECatalogueScreen() {
   );
 
   return (
-    <View style={styles.container}>
+    <SafeScreen aboveTabBar includeTop style={styles.container}>
       <LinearGradient
         colors={["#f9fafb", "#ffffff", "#f3f4f6"]}
         style={styles.backgroundGradient}
@@ -275,7 +280,10 @@ export default function ECatalogueScreen() {
       ) : (
         <ScrollView
           style={styles.scrollView}
-          contentContainerStyle={styles.content}
+          contentContainerStyle={[
+            styles.content,
+            { paddingBottom: scrollPaddingBottom },
+          ]}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
@@ -511,7 +519,7 @@ export default function ECatalogueScreen() {
               ))}
         </ScrollView>
       )}
-    </View>
+    </SafeScreen>
   );
 }
 

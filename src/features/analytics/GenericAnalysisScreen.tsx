@@ -20,7 +20,10 @@ import { PeriodSelector } from "../../components/PeriodSelector";
 import { ExecutiveKpiTile } from "../../components/ExecutiveKpiTile";
 import { RankingCard } from "../../components/RankingCard";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { SafeScreen } from "../../components/SafeScreen";
+import {
+  SafeScreen,
+  useSafeScreenInsets,
+} from "../../components/SafeScreen";
 import {
   DynamicFilterBar,
   dimensionFiltersToParams,
@@ -58,6 +61,9 @@ const METRIC_OPTIONS = [
 ];
 
 export function GenericAnalysisScreen() {
+  const { topInset, scrollPaddingBottom } = useSafeScreenInsets({
+    aboveTabBar: true,
+  });
   const params = useLocalSearchParams<{
     dimension?: string;
     metric?: string;
@@ -148,8 +154,11 @@ export function GenericAnalysisScreen() {
   }
 
   return (
-    <SafeScreen style={styles.container}>
-      <LinearGradient colors={["#667eea", "#4f46e5"]} style={styles.header}>
+    <SafeScreen aboveTabBar includeTop={false} style={styles.container}>
+      <LinearGradient
+        colors={["#667eea", "#4f46e5"]}
+        style={[styles.header, { paddingTop: topInset }]}
+      >
         <View style={styles.headerRow}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={22} color="#fff" />
@@ -167,7 +176,10 @@ export function GenericAnalysisScreen() {
       </LinearGradient>
 
       <ScrollView
-        contentContainerStyle={styles.body}
+        contentContainerStyle={[
+          styles.body,
+          { paddingBottom: scrollPaddingBottom },
+        ]}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -334,7 +346,6 @@ export function GenericAnalysisScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f8fafc" },
   header: {
-    paddingTop: Platform.OS === "ios" ? 56 : 40,
     paddingBottom: 16,
     paddingHorizontal: 16,
   },

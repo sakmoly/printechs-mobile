@@ -24,6 +24,7 @@ export const KNOWN_LOGICAL_DIMENSIONS = [
   "store",
   "category",
   "item_group",
+  "sub_group",
   "salesperson",
   "item",
 ] as const;
@@ -72,6 +73,7 @@ export const LOGICAL_DIMENSION_LABELS: Record<string, string> = {
   store: "Store",
   category: "Category",
   item_group: "Item Group",
+  sub_group: "Sub Group",
   salesperson: "Salesperson",
   item: "Item",
 };
@@ -98,6 +100,7 @@ export const LOGICAL_DIMENSION_PARAM_KEYS: Record<string, string[]> = {
   store: ["store"],
   category: ["category"],
   item_group: ["item_group", "itemGroup"],
+  sub_group: ["sub_group", "subGroup"],
   salesperson: ["salesperson"],
   item: ["item", "item_code"],
 };

@@ -706,15 +706,10 @@ export const oauthApi = {
    */
   async getValidToken(): Promise<string | null> {
     try {
-      // Get access token for API calls
+      await this.ensureValidToken();
       const accessToken = await storage.getToken();
-
-      if (accessToken) {
-        logger.info("🔑 Using access token for API calls");
-        return accessToken;
-      }
-
-      logger.info("⚠️ No valid access token found");
+      if (accessToken) return accessToken;
+      logger.debug("No access token after ensureValidToken");
       return null;
     } catch (error) {
       logger.error("❌ Error getting valid token:", error);

@@ -20,8 +20,16 @@ import {
 } from "../api/mobileConfig";
 import { logger } from "../utils/logger";
 import { useBootstrapStore } from "./bootstrap";
+import { useDashboardFiltersStore } from "./dashboardFilters";
 import { normalizeAccessScope, asTruthyFlag } from "../api/accessScope";
 import { normalizeServerUrl } from "../api/serverUrl";
+import {
+  buildSessionUserKey,
+  hydrateAllDashboardBoards,
+  setActiveSessionUserKey,
+} from "../api/sessionCache";
+import { defaultPeriod } from "../utils/period";
+import { resolveCompanyName } from "../api/apiResilience";
 
 function applyNormalizedServerUrl(config: ServerConfig): ServerConfig {
   if (!config?.serverUrl) return config;
@@ -30,7 +38,7 @@ function applyNormalizedServerUrl(config: ServerConfig): ServerConfig {
     return config;
   }
   if (normalized.remapped) {
-    console.warn("⚠️ Stored server URL healed:", normalized.note);
+    logger.debug("Stored server URL healed:", normalized.note);
   }
   let hostname = config.hostname;
   let port = config.port;
@@ -136,21 +144,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   mobileConfig: DEFAULT_MOBILE_CONFIG,
 
   login: async (credentials) => {
-    console.log("🏪 AUTH STORE - Login called with:", credentials);
+    logger.debug("AUTH STORE - Login");
     set({ isLoading: true, error: null });
 
     // Update HTTP client with server configuration before login
     const currentConfig = get().serverConfig;
-    console.log("🔧 Current server config:", currentConfig);
+    logger.debug("Current server config loaded");
 
     if (currentConfig.serverUrl) {
       http.setBaseUrl(currentConfig.serverUrl);
-      console.log(
-        "🌐 HTTP client base URL updated to:",
-        currentConfig.serverUrl
-      );
       http.setUnauthorizedHandler(async () => {
-        console.log("🔒 Unauthorized response detected during session, logging out");
+        logger.debug("Unauthorized response during session, logging out");
         await get().logout();
       });
     }
@@ -166,8 +170,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const url = new URL(serverUrl);
         emailDomain = url.hostname.replace(/^www\./, ""); // Remove www. prefix if present
       }
-    } catch (e) {
-      console.log("Could not parse server URL for email domain, using default");
+    } catch {
+      logger.debug("Could not parse server URL for email domain, using default");
     }
 
     const userEmail = credentials.usr.includes("@")
@@ -177,11 +181,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Do not hardcode a specific user's image; leave empty to allow UI fallback
     let userImage: string | null = null;
 
-    console.log("=== AUTH STORE - OAuth Login ===");
-    console.log("User email:", userEmail);
-    console.log("Server URL:", serverUrl);
-    console.log("User image:", userImage);
-    console.log("==========================================");
+    logger.debug("OAuth login", { userEmail, serverUrl });
 
     const enrichedUser = {
       username: credentials.usr,
@@ -197,12 +197,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       home_page: "/app",
     };
 
-    console.log("👤 Enriched user data:", enrichedUser);
-
     try {
       await storage.setUser(enrichedUser);
     } catch (error) {
-      console.warn("⚠️ Failed to persist user profile:", error);
+      logger.error("Failed to persist user profile:", error);
     }
 
     set({ isAuthenticated: true, user: enrichedUser, isLoading: true });
@@ -210,7 +208,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await get().loadPermissions();
     set({ isLoading: false });
 
-    console.log("✅ AUTH STORE - Login completed successfully");
+    logger.debug("AUTH STORE - Login completed");
     return true;
   },
 
@@ -245,10 +243,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       await storage.removeUser();
     } catch (error) {
-      console.warn("⚠️ Failed to clear stored user:", error);
+      logger.error("Failed to clear stored user:", error);
     }
     get().resetPermissions();
     useBootstrapStore.getState().clearBootstrap();
+    useDashboardFiltersStore.getState().reset();
     set({
       isAuthenticated: false,
       user: null,
@@ -275,7 +274,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       try {
         storedUser = await storage.getUser();
       } catch (error) {
-        console.warn("⚠️ Failed to load stored user:", error);
+        logger.error("Failed to load stored user:", error);
       }
 
       // Retrieve stored token data if available
@@ -296,53 +295,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
 
-      const now = Date.now();
-      const expiresBuffer = 5 * 60 * 1000; // 5 minutes
-
-      // Refresh token if it's expired or about to expire soon
-      if (!tokenData.expires_at || tokenData.expires_at <= now + expiresBuffer) {
-        const refreshResult = await oauthApi.refreshToken();
-        
-        // Only logout if refresh token itself is invalid/expired (non-recoverable error)
-        // Keep user logged in for temporary errors (network/server issues)
-        if (!refreshResult.success) {
-          // Check if error is non-recoverable (refresh token invalid/expired)
-          const isNonRecoverable = 
-            refreshResult.isRecoverable === false ||
-            refreshResult.error?.toLowerCase().includes("invalid") ||
-            refreshResult.error?.toLowerCase().includes("expired") ||
-            refreshResult.error?.includes("401") ||
-            refreshResult.error?.includes("400");
-          
-          if (isNonRecoverable) {
-            // Refresh token is invalid - user must login again
-            logger.info("Refresh token is invalid/expired - logging out");
-            await oauthApi.logout();
-            await storage.removeUser().catch(() => {});
-            set({ isAuthenticated: false, user: null, isLoading: false });
-            return;
-          } else {
-            // Temporary error (network/server) - keep user logged in
-            // Token refresh will retry later when making API calls
-            logger.info("Temporary refresh failure (recoverable), keeping user logged in");
-            // Check if current token is still valid for now
-            if (tokenData.expires_at && tokenData.expires_at > now) {
-              logger.info("Current token is still valid, continuing with existing token");
-              // Continue with existing token
-            } else {
-              // Token is expired but refresh failed temporarily
-              // Still keep user logged in - HTTP interceptor will retry on next API call
-              logger.info("Token expired but refresh failed temporarily - user stays logged in, will retry on next API call");
-            }
-          }
-        } else if (refreshResult.data) {
-          // Token refreshed successfully
-          tokenData = refreshResult.data;
-          logger.info("Token refreshed successfully in checkAuth");
-        }
-      }
-
-      // Ensure we have a user object
+      // Ensure we have a user object before hydrate (no network)
       if (!storedUser) {
         const identifier =
           tokenData.user || (await storage.getItem("user_identifier"));
@@ -355,22 +308,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             designation: "User",
             department: "General",
             company: "Printechs",
-            image: currentConfig?.serverUrl
-              ? `${currentConfig.serverUrl}/files/Sakeer.png`
-              : null,
-            user_image: currentConfig?.serverUrl
-              ? `${currentConfig.serverUrl}/files/Sakeer.png`
-              : null,
-            photo_url: currentConfig?.serverUrl
-              ? `${currentConfig.serverUrl}/files/Sakeer.png`
-              : null,
+            image: null,
+            user_image: null,
+            photo_url: null,
             home_page: "/app",
           };
           await storage.setUser(storedUser).catch(() => {});
         }
       }
 
-      // Sanitize any legacy hardcoded image to avoid showing the wrong photo
       if (storedUser) {
         const imgFields = ["image", "user_image", "photo_url"] as const;
         let mutated = false;
@@ -393,8 +339,105 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
 
+      const userKey = buildSessionUserKey({
+        username:
+          storedUser.username ||
+          (typeof storedUser.user === "string" ? storedUser.user : null) ||
+          storedUser.email,
+        email: storedUser.email,
+        serverUrl: get().serverConfig.serverUrl,
+      });
+      setActiveSessionUserKey(userKey);
+
+      // Fast path: paint from disk BEFORE token refresh / bootstrap network
+      const hydrated = await useBootstrapStore
+        .getState()
+        .hydrateFromCache(userKey);
+      if (hydrated) {
+        const period = defaultPeriod();
+        const companyEarly = resolveCompanyName(
+          undefined,
+          storedUser?.company,
+          useBootstrapStore.getState().bootstrap?.context?.company
+        );
+        if (companyEarly) {
+          await hydrateAllDashboardBoards(userKey, companyEarly, period);
+        }
+        http.setUnauthorizedHandler(async () => {
+          logger.debug("Unauthorized response detected, logging out user");
+          await get().logout();
+        });
+        set({
+          isAuthenticated: true,
+          user: storedUser,
+          error: null,
+          isLoading: false,
+        });
+        logger.info("Fast start from session cache — refreshing in background");
+        void (async () => {
+          try {
+            const nowBg = Date.now();
+            const expiresBufferBg = 5 * 60 * 1000;
+            if (
+              !tokenData.expires_at ||
+              tokenData.expires_at <= nowBg + expiresBufferBg
+            ) {
+              const refreshResult = await oauthApi.refreshToken();
+              if (
+                !refreshResult.success &&
+                (refreshResult.isRecoverable === false ||
+                  refreshResult.error?.toLowerCase().includes("invalid") ||
+                  refreshResult.error?.toLowerCase().includes("expired") ||
+                  refreshResult.error?.includes("401") ||
+                  refreshResult.error?.includes("400"))
+              ) {
+                await get().logout();
+                return;
+              }
+            }
+            await get().loadMobileConfig();
+            await get().loadPermissions();
+          } catch (e) {
+            logger.warn("Background session refresh failed", e);
+          }
+        })();
+        return;
+      }
+
+      const now = Date.now();
+      const expiresBuffer = 5 * 60 * 1000;
+
+      // Cold start: refresh token then load bootstrap (blocking)
+      if (!tokenData.expires_at || tokenData.expires_at <= now + expiresBuffer) {
+        const refreshResult = await oauthApi.refreshToken();
+
+        if (!refreshResult.success) {
+          const isNonRecoverable =
+            refreshResult.isRecoverable === false ||
+            refreshResult.error?.toLowerCase().includes("invalid") ||
+            refreshResult.error?.toLowerCase().includes("expired") ||
+            refreshResult.error?.includes("401") ||
+            refreshResult.error?.includes("400");
+
+          if (isNonRecoverable) {
+            logger.info("Refresh token is invalid/expired - logging out");
+            await oauthApi.logout();
+            await storage.removeUser().catch(() => {});
+            set({ isAuthenticated: false, user: null, isLoading: false });
+            return;
+          } else {
+            logger.info(
+              "Temporary refresh failure (recoverable), keeping user logged in"
+            );
+          }
+        } else if (refreshResult.data) {
+          tokenData = refreshResult.data;
+          logger.info("Token refreshed successfully in checkAuth");
+        }
+      }
+
       http.setUnauthorizedHandler(async () => {
-        console.log("🔒 Unauthorized response detected, logging out user");
+        logger.debug("Unauthorized response detected, logging out user");
         await get().logout();
       });
 
@@ -403,6 +446,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         user: storedUser,
         error: null,
       });
+
       await get().loadMobileConfig();
       await get().loadPermissions();
       set({ isLoading: false });
@@ -508,12 +552,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             scope: undefined,
           },
         });
-        console.log("🔐 Mock/demo mode: skipping server permissions");
+        logger.debug("Mock/demo mode: skipping server permissions");
         return;
       }
 
       const user = get().user;
-      console.log("🔐 Loading permissions for user:", user?.username);
+      logger.debug("Loading permissions", { user: user?.username });
       const defaultScope: Partial<AccessPermissionScope> = {
         ...overrideScope,
       };
@@ -522,12 +566,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       let profiles = result.profiles;
       let resolvedScope = normalizeAccessScope(result.scope ?? defaultScope);
 
-      console.log("✅ Permissions fetched:", {
+      logger.debug("Permissions fetched", {
         count: profiles.length,
         scope: resolvedScope,
-        viewTerritories: resolvedScope.view_territories,
-        approveTerritories: resolvedScope.approve_territories,
-        allowViewAllSales: resolvedScope.allow_view_all_sales,
       });
 
       // If nothing matched, retry with inferred scope (e.g. branch/territory defaults)
@@ -554,17 +595,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           JSON.stringify(fallbackScope) !== JSON.stringify(defaultScope);
 
         if (hasFallbackOverride) {
-          console.log("🔄 Retry permissions with scope:", fallbackScope);
+          logger.debug("Retry permissions with scope", fallbackScope);
           result = await getMyAccess(fallbackScope, get().mobileConfig);
           profiles = result.profiles;
           resolvedScope = normalizeAccessScope(
             result.scope ?? fallbackScope
           );
-          console.log("✅ Permissions fetched (retry):", {
+          logger.debug("Permissions fetched (retry)", {
             count: profiles.length,
-            scope: resolvedScope,
-            viewTerritories: resolvedScope.view_territories,
-            approveTerritories: resolvedScope.approve_territories,
           });
         }
       }
@@ -595,31 +633,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           scope: resolvedScope,
         },
       });
-      if (__DEV__) {
-        const denied = Object.entries(menus)
-          .filter(([, v]) => !v)
-          .map(([k]) => k);
-        console.log("🧭 Menu permissions map:", menus);
-        console.log("🧭 Denied AO keys:", denied);
-        const c360 = profiles.filter((p) =>
-          /customer\s*360|get_customer_360|search_customers/i.test(
-            `${p.label || ""} ${p.object_key || ""}`
-          )
-        );
-        console.log(
-          "🧭 Customer 360 related AOs:",
-          c360.map((p) => ({
-            key: p.object_key,
-            label: p.label,
-            type: p.object_type,
-            can_view: p.can_view,
-          }))
-        );
-      } else {
-        console.log("🧭 Menu permissions map:", menus);
-      }
     } catch (error) {
-      console.warn("⚠️ Failed to load permissions:", error);
+      logger.error("Failed to load permissions:", error);
       set({
         permissions: {
           fetched: true,
@@ -633,15 +648,42 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   loadMobileConfig: async () => {
     try {
-      // Prefer get_mobile_bootstrap; falls back to get_mobile_config inside fetch
-      const result = await useBootstrapStore.getState().loadBootstrap();
+      const user = get().user;
+      const userKey = buildSessionUserKey({
+        username:
+          user?.username ||
+          (typeof user?.user === "string" ? user.user : null) ||
+          user?.email,
+        email: user?.email,
+        serverUrl: get().serverConfig.serverUrl,
+      });
+      setActiveSessionUserKey(userKey);
+
+      const result = await useBootstrapStore
+        .getState()
+        .loadBootstrap(userKey);
       if (result?.mobileConfig) {
         set({ mobileConfig: result.mobileConfig });
         logger.info("Mobile config synced from bootstrap", {
           source: result.bootstrap.source,
           business_type: result.bootstrap.context.business_type,
           version: result.mobileConfig.version,
+          fromCache: useBootstrapStore.getState().fromCache,
         });
+        const period = defaultPeriod();
+        const company =
+          resolveCompanyName(
+            get().permissions.scope?.company,
+            user?.company,
+            result.bootstrap.context?.company
+          ) || undefined;
+        if (company) {
+          void hydrateAllDashboardBoards(
+            userKey,
+            String(company),
+            period
+          );
+        }
         return;
       }
       const config = await fetchMobileConfig();

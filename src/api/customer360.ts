@@ -15,6 +15,13 @@ import {
 } from "./apiResilience";
 import { optimizedApis } from "./optimized-apis";
 import {
+  ALL_TERRITORIES,
+  baTerritoryRequestParams,
+  filterRowsByTerritory,
+  isKnownTerritoryName,
+  territoryFilters,
+} from "../utils/dashboardTerritory";
+import {
   getDemoCustomer360,
   getDemoCustomerSearch,
   isGenericCustomerLabel,
@@ -26,6 +33,41 @@ import {
   type Customer360,
   type CustomerSearchHit,
 } from "./customer360Types";
+
+function looksLikeTableRank(id: string): boolean {
+  return /^\d{1,4}$/.test(String(id || "").trim());
+}
+
+/** Map display name / link / rank row → ERPNext Customer name for APIs. */
+export async function resolveCustomerParty(input: string): Promise<string> {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) return trimmed;
+
+  const scope = useAuthStore.getState().permissions?.scope;
+  if (isKnownTerritoryName(trimmed, scope)) {
+    return trimmed;
+  }
+
+  if (!looksLikeTableRank(trimmed)) {
+    const shell = await fetchCustomerDocShell(trimmed);
+    if (shell?.customer.id) return shell.customer.id;
+  }
+
+  try {
+    const hits = await searchCustomers(trimmed);
+    const lower = trimmed.toLowerCase();
+    const exact = hits.find(
+      (h) =>
+        h.id.toLowerCase() === lower || h.name.toLowerCase() === lower
+    );
+    if (exact?.id) return exact.id;
+    if (hits.length === 1) return hits[0].id;
+  } catch {
+    /* fall through */
+  }
+
+  return trimmed;
+}
 
 async function prepare() {
   const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
@@ -39,21 +81,33 @@ async function prepare() {
  * Live Customer typeahead via core Frappe (works when erp_analysis.customer
  * is not installed yet on the site). Real ERP data only — never sample.
  */
+export type CustomerSearchOptions = {
+  /** Dashboard territory chip (omit or `__all__` for no filter). */
+  territory?: string;
+};
+
 async function searchCustomersViaFrappe(
-  query: string
+  query: string,
+  territory?: string
 ): Promise<CustomerSearchHit[]> {
   await prepare();
   const q = (query || "").trim();
+  const territoryFilter = String(territory || "").trim();
+  const restrictTerritory =
+    territoryFilter && territoryFilter !== ALL_TERRITORIES
+      ? territoryFilter
+      : "";
 
-  try {
-    const linkRes = await http.get<any>(
-      "/api/method/frappe.desk.search.search_link",
-      {
-        doctype: "Customer",
-        txt: q,
-        page_length: 25,
-      }
-    );
+  if (!restrictTerritory) {
+    try {
+      const linkRes = await http.get<any>(
+        "/api/method/frappe.desk.search.search_link",
+        {
+          doctype: "Customer",
+          txt: q,
+          page_length: 25,
+        }
+      );
     const rows = unwrapFrappeMessage(linkRes);
     const list = Array.isArray(rows)
       ? rows
@@ -84,11 +138,15 @@ async function searchCustomersViaFrappe(
         })
         .filter((h: CustomerSearchHit) => h.id);
     }
-  } catch (e) {
-    console.warn("⚠️ search_link Customer failed, trying get_list:", e);
+    } catch (e) {
+      console.warn("⚠️ search_link Customer failed, trying get_list:", e);
+    }
   }
 
   const filters: unknown[] = [["disabled", "=", 0]];
+  if (restrictTerritory) {
+    filters.push(["territory", "=", restrictTerritory]);
+  }
   const orFilters = q
     ? [
         ["name", "like", `%${q}%`],
@@ -148,14 +206,22 @@ async function fetchCustomerDocShell(
     // which some sites restrict and which mishandled auth previously.
     let doc: any = null;
     try {
-      const res = await http.get<any>("/api/method/frappe.client.get", {
-        doctype: "Customer",
-        name: customer,
-      });
+      const res = await http.get<any>(
+        "/api/method/frappe.client.get",
+        {
+          doctype: "Customer",
+          name: customer,
+        },
+        { silentError: true }
+      );
       doc = unwrapFrappeMessage(res) || res?.message || res;
     } catch {
       const encoded = encodeURIComponent(customer);
-      const res = await http.get<any>(`/api/resource/Customer/${encoded}`);
+      const res = await http.get<any>(
+        `/api/resource/Customer/${encoded}`,
+        undefined,
+        { silentError: true }
+      );
       doc = res?.data || res?.message || res;
     }
     if (!doc?.name && !doc?.customer_name) return null;
@@ -857,7 +923,11 @@ async function enrichCustomer360FromLive(
 
   const party = params.customer || next.customer.id || next.customer.name;
 
-  if (needsIdentityEnrichment(next) || next.customer.credit_limit == null) {
+  const scope = useAuthStore.getState().permissions?.scope;
+  if (
+    (needsIdentityEnrichment(next) || next.customer.credit_limit == null) &&
+    !isKnownTerritoryName(party, scope)
+  ) {
     const shell = await fetchCustomerDocShell(party);
     if (shell) {
       next.customer = {
@@ -881,13 +951,16 @@ async function enrichCustomer360FromLive(
     }
   }
 
+  const partyId = String(next.customer.id || party).trim();
   const needStmt =
-    needsReceivablesEnrichment(next) || needsSalesEnrichment(next);
+    Boolean(partyId) ||
+    needsReceivablesEnrichment(next) ||
+    needsSalesEnrichment(next);
 
-  if (needStmt) {
+  if (needStmt && partyId) {
     try {
       const stmt = await optimizedApis.getCustomerStatement({
-        customer: String(next.customer.id || party),
+        customer: partyId,
         company: params.company || next.meta.company || undefined,
         from_date: params.from_date || `${new Date().getFullYear()}-01-01`,
         to_date: params.to_date || toIsoDate(new Date()),
@@ -916,33 +989,37 @@ async function enrichCustomer360FromLive(
             return acc;
           }, 0);
         }
-        const overdue =
-          next.receivables?.overdue != null
-            ? next.receivables.overdue
-            : Number(stmt.total_overdue ?? stmt.overdue) ||
-              overdueFromItems;
+        const overdueFromStmt =
+          Number(stmt.total_overdue ?? stmt.overdue) ||
+          (overdueFromItems != null && Number.isFinite(overdueFromItems)
+            ? overdueFromItems
+            : NaN);
+        const overdue = Number.isFinite(overdueFromStmt)
+          ? overdueFromStmt
+          : next.receivables?.overdue ?? null;
 
         let current = next.receivables?.current ?? null;
         if (
-          current == null &&
           outstanding != null &&
           overdue != null &&
-          Number.isFinite(overdue)
+          Number.isFinite(Number(overdue))
         ) {
-          current = Math.max(0, outstanding - Number(overdue));
+          current = Math.max(0, Number(outstanding) - Number(overdue));
         }
 
         let avgMonthly = next.receivables?.avg_monthly_sales ?? null;
         const invoiced = Number(stmt.total_invoiced);
-        if (avgMonthly == null && Number.isFinite(invoiced) && invoiced > 0) {
+        if (Number.isFinite(invoiced) && invoiced > 0) {
           const from = String(stmt.from_date || params.from_date || "");
           const to = String(stmt.to_date || params.to_date || "");
           const months = monthsBetweenInclusive(from, to);
           if (months > 0) avgMonthly = invoiced / months;
         }
 
-        let avgPaid =
-          next.receivables?.avg_monthly_paid ?? paidFromStatementItems(stmt);
+        const avgPaid =
+          paidFromStatementItems(stmt) ??
+          next.receivables?.avg_monthly_paid ??
+          null;
 
         if (
           outstanding != null ||
@@ -953,20 +1030,13 @@ async function enrichCustomer360FromLive(
           next.receivables = {
             ...(next.receivables || {}),
             outstanding:
-              next.receivables?.outstanding ??
-              (outstanding != null && Number.isFinite(outstanding)
+              outstanding != null && Number.isFinite(outstanding)
                 ? outstanding
-                : null),
-            overdue:
-              next.receivables?.overdue ??
-              (overdue != null && Number.isFinite(Number(overdue))
-                ? Number(overdue)
-                : null),
+                : next.receivables?.outstanding ?? null,
+            overdue,
             current,
-            avg_monthly_sales:
-              avgMonthly ?? next.receivables?.avg_monthly_sales ?? null,
-            avg_monthly_paid:
-              avgPaid ?? next.receivables?.avg_monthly_paid ?? null,
+            avg_monthly_sales: avgMonthly,
+            avg_monthly_paid: avgPaid,
             oldest_invoice: next.receivables?.oldest_invoice ?? null,
           };
         }
@@ -1101,24 +1171,45 @@ async function enrichCustomer360FromLive(
 }
 
 export async function searchCustomers(
-  query: string
+  query: string,
+  options?: CustomerSearchOptions
 ): Promise<CustomerSearchHit[]> {
   const state = useAuthStore.getState();
   const cfg = state.mobileConfig;
+  const territory = String(options?.territory || "").trim();
 
   const demo = demoDataOnlyWhenNoServer(() => getDemoCustomerSearch(query));
-  if (demo !== undefined) return demo;
+  if (demo !== undefined) {
+    return filterRowsByTerritory(demo, territory);
+  }
+
+  const applyTerritory = (hits: CustomerSearchHit[]) =>
+    filterRowsByTerritory(hits, territory);
 
   const tryBaSearch = async () => {
     await prepare();
     const company = resolveCompanyName(
       state.permissions.scope?.company
     );
+    const territoryParams = baTerritoryRequestParams(
+      territoryFilters(territory)
+    );
     const response = await http.get<any>(
       ERP_ANALYSIS.customer360.search,
-      filterBaParams({ q: query, search: query, company, limit: 25 }, cfg)
+      filterBaParams(
+        {
+          q: query,
+          search: query,
+          company,
+          limit: 25,
+          ...territoryParams,
+        },
+        cfg
+      )
     );
-    return normalizeCustomerSearch(unwrapFrappeMessage(response));
+    return applyTerritory(
+      normalizeCustomerSearch(unwrapFrappeMessage(response))
+    );
   };
 
   if (
@@ -1146,7 +1237,7 @@ export async function searchCustomers(
 
   // Real ERP Customer list — never sample names on a configured server
   try {
-    return await searchCustomersViaFrappe(query);
+    return applyTerritory(await searchCustomersViaFrappe(query, territory));
   } catch (e) {
     console.warn("⚠️ Live Customer search failed:", e);
     return [];
@@ -1161,9 +1252,10 @@ export async function fetchCustomer360(params: {
 }): Promise<Customer360> {
   const state = useAuthStore.getState();
   const cfg = state.mobileConfig;
+  const party = await resolveCustomerParty(params.customer);
 
   const demo = demoDataOnlyWhenNoServer(() =>
-    getDemoCustomer360(params.customer)
+    getDemoCustomer360(party)
   );
   if (demo !== undefined) return demo;
 
@@ -1176,7 +1268,7 @@ export async function fetchCustomer360(params: {
       ERP_ANALYSIS.customer360.get,
       filterBaParams(
         {
-          customer: params.customer,
+          customer: party,
           company,
           from_date: params.from_date,
           to_date: params.to_date,
@@ -1226,7 +1318,7 @@ export async function fetchCustomer360(params: {
       });
     }
     const enriched = await enrichCustomer360FromLive(normalized, {
-      customer: params.customer,
+      customer: party,
       company,
       from_date: params.from_date,
       to_date: params.to_date,
@@ -1266,10 +1358,10 @@ export async function fetchCustomer360(params: {
   }
 
   // Master data only (name/contact) from live Customer doctype — no fake KPIs
-  const shell = await fetchCustomerDocShell(params.customer);
+  const shell = await fetchCustomerDocShell(party);
   if (shell) {
     return enrichCustomer360FromLive(shell, {
-      customer: params.customer,
+      customer: party,
       company:
         params.company ||
         resolveCompanyName(state.permissions.scope?.company),
