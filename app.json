@@ -20,7 +20,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.printechs.erpnext",
-      "buildNumber": "5",
+      "buildNumber": "6",
       "icon": "./assets/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to camera to scan QR codes",
@@ -81,8 +81,9 @@
         "origin": false
       },
       "eas": {
-        "projectId": "4b7ff664-d43c-40ba-844e-d3a910e45c8f"
+        "projectId": "10aaba16-f1df-41a6-84fe-c543a7596019"
       }
-    }
+    },
+    "owner": "sakmoly2233"
   }
 }
