@@ -39,6 +39,12 @@ type Props = {
   legendLyLabel?: string;
   /** Always show TY/LY legend when compare mode is on (even if LY values are zero). */
   forceShowLyLegend?: boolean;
+  /** Highlight a month (sync with value cards / detail panel). */
+  selectedIndex?: number | null;
+  /** Tap a point on the line or a value card. */
+  onPointSelect?: (index: number, row: AnalysisRow) => void;
+  /** 0 = whole numbers on axis and month chips (e.g. VAT dashboard). */
+  amountDecimals?: number;
 };
 
 /** Smooth line through points (no area fill). */
@@ -62,7 +68,22 @@ const CHART_PAD = { top: 24, right: 16, bottom: 36, left: 44 };
 const PLOT_H = 168;
 const POINT_STEP = 72;
 
-function compactVal(n: number, currency: string): string {
+function compactVal(
+  n: number,
+  currency: string,
+  amountDecimals?: number
+): string {
+  if (amountDecimals === 0) {
+    const r = Math.round(n);
+    const abs = Math.abs(r);
+    if (abs >= 1_000_000) {
+      return `${(r / 1_000_000).toFixed(0)}M`;
+    }
+    if (abs >= 1_000) {
+      return `${(r / 1_000).toFixed(0)}K`;
+    }
+    return formatCurrency(r, currency, { hideCode: true, decimals: 0 });
+  }
   return formatCurrency(n, currency, { compact: true, hideCode: true });
 }
 
@@ -89,6 +110,9 @@ export function AnalysisLineChart({
   legendCurrentLabel = "Current",
   legendLyLabel = "Last year",
   forceShowLyLegend = false,
+  selectedIndex = null,
+  onPointSelect,
+  amountDecimals,
 }: Props) {
   const colors = useMemo(() => {
     const fromConfig = resolveChartColors(config);
@@ -205,7 +229,7 @@ export function AnalysisLineChart({
                   fontFamily={Fonts.body}
                   textAnchor="end"
                 >
-                  {compactVal(tick, currency)}
+                  {compactVal(tick, currency, amountDecimals)}
                 </SvgText>
               </G>
             );
@@ -254,24 +278,39 @@ export function AnalysisLineChart({
             const isLast = i === slice.length - 1;
             const anchor = isFirst ? "start" : isLast ? "end" : "middle";
             const labelX = isFirst ? p.x + 2 : isLast ? p.x - 2 : p.x;
+            const selected = selectedIndex === i;
+            const pickPoint = () => onPointSelect?.(i, slice[i]);
             return (
             <G key={`pt-${i}`}>
               <Circle
                 cx={p.x}
                 cy={p.y}
-                r={6}
+                r={16}
+                fill="transparent"
+                onPress={onPointSelect ? pickPoint : undefined}
+              />
+              <Circle
+                cx={p.x}
+                cy={p.y}
+                r={selected ? 9 : 6}
                 fill="#fff"
                 stroke={colors.current}
-                strokeWidth={2.5}
+                strokeWidth={selected ? 3 : 2.5}
               />
-              <Circle cx={p.x} cy={p.y} r={3} fill={colors.current} />
+              <Circle
+                cx={p.x}
+                cy={p.y}
+                r={selected ? 4 : 3}
+                fill={colors.current}
+              />
               <SvgText
                 x={labelX}
                 y={CHART_PAD.top + PLOT_H + 16}
-                fill="#64748b"
+                fill={selected ? colors.current : "#64748b"}
                 fontSize="10"
                 fontFamily={Fonts.bodySemi}
                 textAnchor={anchor}
+                onPress={onPointSelect ? pickPoint : undefined}
               >
                 {shortLabel(slice[i].label, 9)}
               </SvgText>
@@ -286,8 +325,14 @@ export function AnalysisLineChart({
         {slice.map((r, i) => {
           const v = values[i];
           const ly = lyValues[i];
+          const selected = selectedIndex === i;
           const body = (
-            <View style={styles.valueCard}>
+            <View
+              style={[
+                styles.valueCard,
+                selected && styles.valueCardSelected,
+              ]}
+            >
               <View style={styles.valueTop}>
                 <View
                   style={[styles.dot, { backgroundColor: colors.current }]}
@@ -297,21 +342,24 @@ export function AnalysisLineChart({
                 </Text>
               </View>
               <Text style={styles.valuePrimary}>
-                {compactVal(v, currency)}
+                {compactVal(v, currency, amountDecimals)}
               </Text>
               {hasLy ? (
                 <Text style={styles.valueLy}>
-                  LY {compactVal(ly, currency)}
+                  LY {compactVal(ly, currency, amountDecimals)}
                 </Text>
               ) : null}
             </View>
           );
-          if (onPointPress) {
+          if (onPointPress || onPointSelect) {
             return (
               <TouchableOpacity
                 key={`vc-${r.id}-${i}`}
                 activeOpacity={0.85}
-                onPress={() => onPointPress(r)}
+                onPress={() => {
+                  onPointSelect?.(i, r);
+                  onPointPress?.(r);
+                }}
                 style={styles.valueCardWrap}
               >
                 {body}
@@ -407,6 +455,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderWidth: 1,
     borderColor: "#eef2ff",
+  },
+  valueCardSelected: {
+    borderColor: "#2563eb",
+    borderWidth: 2,
+    backgroundColor: "#eff6ff",
   },
   valueTop: {
     flexDirection: "row",

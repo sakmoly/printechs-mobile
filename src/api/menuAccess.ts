@@ -80,7 +80,48 @@ export const HUB_ACCESS: Record<string, HubAccessSpec> = {
   approvals: { menuKey: "AO-00023" },
   settings: { menuKey: "AO-00025" },
   dashboard: { menuKey: "AO-00022" },
+  /** Desk AO: erp_analysis.tax.get_vat_dashboard */
+  vat: {
+    labelPatterns: [
+      /erp_analysis\.tax\.get_vat_dashboard/i,
+      /erp_analysis\.tax\.get_vat_summary/i,
+      /get_vat_dashboard/i,
+      /get_vat_summary/i,
+      /vat\s*dashboard/i,
+      /vat\s*report/i,
+    ],
+  },
 };
+
+const VAT_API_OBJECT_KEYS = [
+  "erp_analysis.tax.get_vat_dashboard",
+  "erp_analysis.tax.get_vat_summary",
+  "get_vat_dashboard",
+  "get_vat_summary",
+] as const;
+
+/**
+ * True when Access Profile grants the VAT dashboard API (or no VAT AO is listed yet).
+ */
+export function hasVatDashboardAccess(
+  permissions: MenuPermissionStateLike
+): boolean {
+  if (!permissions.fetched) return true;
+
+  for (const k of VAT_API_OBJECT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(permissions.menus, k)) {
+      return permissions.menus[k] === true;
+    }
+  }
+
+  const spec = HUB_ACCESS.vat;
+  const hits = profilesMatching(permissions.raw, spec.labelPatterns || []);
+  if (hits.length > 0) {
+    return hits.some((h) => asTruthyFlag(h.can_view));
+  }
+
+  return true;
+}
 
 function menuKeyAllowed(
   permissions: MenuPermissionStateLike,

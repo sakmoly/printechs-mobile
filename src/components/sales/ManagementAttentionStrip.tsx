@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -22,6 +22,7 @@ type Props = {
 };
 
 const CARD_W = 168;
+const DEFAULT_METRIC_LABEL = "Net Sales";
 
 function cardVisual(label: string): { icon: IonIcon; color: string; bg: string } {
   const l = label.toLowerCase();
@@ -49,23 +50,65 @@ function rowsFromEntry(entry: SalesWidgetEntry): AnalysisRow[] {
   return [];
 }
 
-function rowAmount(row: AnalysisRow, currency: string): string | null {
+function num(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(String(v).replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+function rowMoneyAmount(row: AnalysisRow): number {
   const cells = row.meta?.cells as Record<string, unknown> | undefined;
   const raw =
+    cells?.net_sales ??
     cells?.amount ??
     cells?.value_sar ??
     cells?.total ??
-    row.meta?.amount;
-  if (raw == null || !Number.isFinite(Number(raw))) return null;
-  return formatCurrency(Number(raw), currency, {
-    compact: true,
-    hideCode: false,
-  });
+    row.meta?.net_sales ??
+    row.meta?.amount ??
+    row.value;
+  return Math.abs(num(raw) ?? 0);
+}
+
+function humanizeMetricKey(raw: string): string {
+  const s = raw.trim();
+  if (!s) return DEFAULT_METRIC_LABEL;
+  if (/^net[_\s-]?sales?$/i.test(s)) return DEFAULT_METRIC_LABEL;
+  if (/^total[_\s-]?sales?$/i.test(s)) return "Total Sales";
+  if (/^gross[_\s-]?profit$/i.test(s)) return "Gross Profit";
+  if (s.includes("_")) {
+    return s
+      .split("_")
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function metricLabelForEntry(entry: SalesWidgetEntry): string {
+  const root = entry.payload as unknown as Record<string, unknown>;
+  const meta = (root.meta || {}) as Record<string, unknown>;
+  const chart = root.chart as Record<string, unknown> | undefined;
+  const config = (entry.payload.config || {}) as Record<string, unknown>;
+
+  for (const v of [
+    meta.metric_label,
+    meta.value_label,
+    config.metric_label,
+    chart?.metric_label,
+    meta.metric,
+    chart?.metric,
+  ]) {
+    if (v == null || v === "") continue;
+    return humanizeMetricKey(String(v));
+  }
+  return DEFAULT_METRIC_LABEL;
 }
 
 export function ManagementAttentionStrip({ entry }: Props) {
   const rows = rowsFromEntry(entry);
   const currency = entry.payload.currency || "SAR";
+  const metricLabel = useMemo(() => metricLabelForEntry(entry), [entry]);
 
   return (
     <View style={styles.wrap}>
@@ -83,20 +126,18 @@ export function ManagementAttentionStrip({ entry }: Props) {
         >
           {rows.map((row, i) => {
             const visual = cardVisual(row.label);
-            const value = Number(row.value) || 0;
-            const amount = rowAmount(row, currency);
-            const displayValue = amount
-              ? value.toLocaleString("en-US", { maximumFractionDigits: 0 })
-              : formatCurrency(value, currency, {
-                  compact: true,
-                  hideCode: false,
-                });
+            const amountNum = rowMoneyAmount(row);
+            const displayAmount = formatCurrency(amountNum, currency, {
+              compact: true,
+              hideCode: false,
+            });
             return (
               <TouchableOpacity
                 key={`${row.id}-${i}`}
                 style={styles.card}
                 activeOpacity={0.88}
               >
+                <Text style={styles.metricLabel}>{metricLabel}</Text>
                 <View style={[styles.iconWrap, { backgroundColor: visual.bg }]}>
                   <Ionicons name={visual.icon} size={18} color={visual.color} />
                 </View>
@@ -104,11 +145,8 @@ export function ManagementAttentionStrip({ entry }: Props) {
                   {row.label}
                 </Text>
                 <Text style={[styles.count, { color: visual.color }]}>
-                  {displayValue}
+                  {displayAmount}
                 </Text>
-                {amount ? (
-                  <Text style={styles.amount}>{amount}</Text>
-                ) : null}
               </TouchableOpacity>
             );
           })}
@@ -129,6 +167,14 @@ const styles = StyleSheet.create({
     borderColor: SALES.border,
     padding: 12,
   },
+  metricLabel: {
+    fontSize: 10,
+    fontFamily: Fonts.bodySemi,
+    color: SALES.subtitle,
+    letterSpacing: 0.35,
+    textTransform: "uppercase",
+    marginBottom: 8,
+  },
   iconWrap: {
     width: 34,
     height: 34,
@@ -148,12 +194,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontFamily: Fonts.bodyBold,
     marginTop: 4,
-  },
-  amount: {
-    fontSize: 11,
-    fontFamily: Fonts.body,
-    color: SALES.subtitle,
-    marginTop: 2,
   },
   empty: {
     color: SALES.subtitle,

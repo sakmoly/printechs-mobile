@@ -2251,18 +2251,36 @@ export async function fetchDashboardWidgetData(
       }
     }
 
-    if (__DEV__ && !isDrillRequest) {
-      console.warn("[widget-ly] loaded", {
-        key: req.widget_key,
-        show_ly: normalized.show_ly,
-        hasSummary: Boolean(normalized.chart?.summary),
-        summaryLy: normalized.chart?.summary?.value_ly ?? null,
-        kpiPrevious: normalized.kpis?.[0]?.previous ?? null,
-        kpiChange: normalized.kpis?.[0]?.change_pct ?? null,
-        seriesCount: normalized.chart?.series?.length ?? 0,
-        rowCount: normalized.rows.length,
-        source: normalized.meta.source,
-      });
+    if (
+      __DEV__ &&
+      process.env.EXPO_PUBLIC_VERBOSE_LOGS === "1" &&
+      !isDrillRequest &&
+      normalized.show_ly
+    ) {
+      const k = String(req.widget_key || "").toLowerCase();
+      const expectsLy =
+        /total|overdue|sales|gp|gross|collected|trend|receivable|payable|inventory|purchases|profit|margin|net_/.test(
+          k
+        );
+      const ty =
+        normalized.kpis?.[0]?.value ??
+        normalized.chart?.summary?.value ??
+        null;
+      const hasTy = ty != null && Number.isFinite(Number(ty));
+      const hasLy =
+        normalized.kpis?.[0]?.previous != null ||
+        normalized.chart?.summary?.value_ly != null ||
+        (normalized.chart?.series?.some(
+          (p) => p.value_ly != null || p.previous != null
+        ) ??
+          false);
+      if (expectsLy && hasTy && !hasLy) {
+        console.warn("[widget-ly] missing LY for widget", {
+          key: req.widget_key,
+          ty,
+          source: normalized.meta.source,
+        });
+      }
     }
 
     logger.info("Widget data loaded", {

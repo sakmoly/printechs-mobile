@@ -16,6 +16,11 @@ export const ERP_ANALYSIS = {
     getSalesByDivisionDrill:
       "/api/method/erp_analysis.api.get_sales_by_division_drill",
     health: "/api/method/erp_analysis.api.health",
+    /** Rebuild tabSalesDashBoard on server (management; permission-gated). */
+    refreshSalesDashboardDaily:
+      "/api/method/erp_analysis.api.refresh_sales_dashboard_daily",
+    refreshSalesDashboard:
+      "/api/method/erp_analysis.api.refresh_sales_dashboard",
   },
   api: {
     getMyAccess: "/api/method/erp_analysis.api.get_my_access",
@@ -122,6 +127,8 @@ export const ERP_ANALYSIS = {
       "/api/method/erp_analysis.receivables.get_territory_receivables",
     getCustomerStatement:
       "/api/method/erp_analysis.receivables.get_customer_statement",
+    getStatementBranding:
+      "/api/method/erp_analysis.receivables.get_statement_branding",
   },
   employee: {
     getCompleteEmployeesData:
@@ -149,6 +156,18 @@ export const ERP_ANALYSIS = {
   customerNotifications: {
     sendStatementPdf:
       "/api/method/erp_analysis.customer_notifications.send_statement_pdf",
+    getStatementPdf:
+      "/api/method/erp_analysis.customer_notifications.get_statement_pdf",
+    getStatementBranding:
+      "/api/method/erp_analysis.customer_notifications.get_statement_branding",
+    getStatementSoaLayout:
+      "/api/method/erp_analysis.customer_notifications.get_statement_soa_layout",
+  },
+  tax: {
+    getVatDashboard:
+      "/api/method/erp_analysis.tax.get_vat_dashboard",
+    getVatSummary:
+      "/api/method/erp_analysis.tax.get_vat_summary",
   },
 } as const;
 

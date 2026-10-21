@@ -10,6 +10,14 @@ export type CustomerSearchHit = {
   salesperson?: string;
 };
 
+export type Customer360StatementPdfHint = {
+  /** e.g. erp_analysis.customer_notifications.get_statement_pdf */
+  method?: string;
+  pdf_method?: string;
+  pdf_share_method?: string;
+  params?: Record<string, unknown>;
+};
+
 export type Customer360 = {
   meta: {
     currency: string;
@@ -17,6 +25,8 @@ export type Customer360 = {
     from_date?: string;
     to_date?: string;
   };
+  /** From get_customer_360.statement — server PDF method + kwargs for WhatsApp share. */
+  statement_pdf?: Customer360StatementPdfHint | null;
   customer: {
     id: string;
     name: string;
@@ -38,6 +48,8 @@ export type Customer360 = {
     gp_pct?: number | null;
     avg_invoice?: number | null;
     last_invoice_date?: string | null;
+    /** When set with ytd, mobile can derive avg_invoice = ytd / count */
+    ytd_invoice_count?: number | null;
   } | null;
   receivables?: {
     outstanding?: number | null;
@@ -216,6 +228,26 @@ function firstNum(...vals: unknown[]): number | null {
     const n = num(v, null);
     if (n != null) return n;
   }
+  return null;
+}
+
+function firstPositiveNum(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    const n = num(v, null);
+    if (n != null && n > 0) return n;
+  }
+  return null;
+}
+
+function avgInvoiceFromYtdAndCount(sales: Record<string, unknown>): number | null {
+  const ytd = firstPositiveNum(sales.ytd, sales.sales_ytd);
+  const cnt = firstPositiveNum(
+    sales.ytd_invoice_count,
+    sales.invoice_count_ytd,
+    sales.ytd_si_count,
+    sales.invoice_count
+  );
+  if (ytd != null && cnt != null) return ytd / cnt;
   return null;
 }
 
@@ -456,8 +488,7 @@ function normalizeReceivablesBlock(
     source.avg_monthly_sales,
     source.average_monthly_sales,
     statement.avg_monthly_sales,
-    root.avg_monthly_sales,
-    root.sales?.avg_monthly_sales
+    root.avg_monthly_sales
   );
 
   // Average monthly payments / collections from this customer
@@ -650,25 +681,38 @@ function normalizeSalesFromRoot(root: any): Customer360["sales"] {
       sales.ytd,
       sales.sales_ytd,
       statement.sales_ytd,
-      statement.total_invoiced,
       receivables.sales_ytd,
       receivables.ytd,
       invoiceSum
     ),
     ytd_ly: firstNum(sales.ytd_ly, sales.previous_year_ytd),
     growth_pct: firstNum(sales.growth_pct, sales.change_pct),
-    gp: firstNum(sales.gp, sales.gross_profit),
-    gp_pct: firstNum(sales.gp_pct, sales.gross_profit_percent),
-    avg_invoice: firstNum(
-      sales.avg_invoice,
-      sales.average_invoice,
-      sales.avg_invoice_value
+    gp: firstNum(sales.gp, sales.gross_profit, sales.gross_profit_amount),
+    gp_pct: firstNum(
+      sales.gp_pct,
+      sales.gross_profit_percent,
+      sales.gp_percent,
+      sales.gross_profit_pct
     ),
+    avg_invoice:
+      sales.avg_invoice != null && sales.avg_invoice !== ""
+        ? num(sales.avg_invoice, null)
+        : firstPositiveNum(
+            sales.average_invoice,
+            sales.avg_invoice_value,
+            avgInvoiceFromYtdAndCount(sales)
+          ),
     last_invoice_date:
       sales.last_invoice_date ||
       invoices[0]?.posting_date ||
       invoices[0]?.date ||
       null,
+    ytd_invoice_count: firstPositiveNum(
+      sales.ytd_invoice_count,
+      sales.invoice_count_ytd,
+      sales.ytd_si_count,
+      sales.distinct_invoice_count
+    ),
   };
 }
 
@@ -707,6 +751,22 @@ export function normalizeCustomer360(raw: any): Customer360 {
   const ar = root.receivables || root.ar || {};
   const charts = root.charts || {};
   const meta = root.meta || {};
+  const statementRoot =
+    root.statement && typeof root.statement === "object" ? root.statement : {};
+  const statement_pdf: Customer360StatementPdfHint | null =
+    statementRoot.method ||
+    statementRoot.pdf_method ||
+    statementRoot.pdf_share_method
+      ? {
+          method: str(statementRoot.method),
+          pdf_method: str(statementRoot.pdf_method),
+          pdf_share_method: str(statementRoot.pdf_share_method),
+          params:
+            statementRoot.params && typeof statementRoot.params === "object"
+              ? (statementRoot.params as Record<string, unknown>)
+              : undefined,
+        }
+      : null;
 
   const hasArSection = Boolean(
     root.receivables ||
@@ -729,6 +789,7 @@ export function normalizeCustomer360(raw: any): Customer360 {
       from_date: meta.from_date || root.from_date,
       to_date: meta.to_date || root.to_date,
     },
+    statement_pdf,
     customer: {
       id: identity.id,
       name: identity.name,

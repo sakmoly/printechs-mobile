@@ -22,12 +22,13 @@ import {
   useCustomer360,
   useCustomerSearch,
 } from "../../src/hooks/useCustomer360";
+import { computeCustomerAvgMonthlySales } from "../../src/api/customer360";
 import { useAuthStore } from "../../src/store/auth";
 import { isModuleEnabled } from "../../src/api/mobileConfig";
 import { canAccessHubFeature } from "../../src/api/menuAccess";
 import { resolveCompanyName } from "../../src/api/apiResilience";
 import { optimizedApis } from "../../src/api/optimized-apis";
-import { presentWhatsAppShare } from "../../src/utils/whatsappShare";
+import { shareCustomerStatementPdf } from "../../src/utils/statementPdfShare";
 import {
   defaultPeriod,
   resolvePeriod,
@@ -40,6 +41,10 @@ import {
   useSafeScreenInsets,
 } from "../../src/components/SafeScreen";
 import { ScreenHeaderNav, goPreviousScreen } from "../../src/components/ScreenHeaderNav";
+import {
+  returnToReceivablesWidgetList,
+  type ReceivablesListReturnParams,
+} from "../../src/utils/receivablesNavigation";
 import { useSafeBottomPadding } from "../../src/hooks/useSafeBottomPadding";
 import { useDashboardFiltersStore } from "../../src/store/dashboardFilters";
 import { getTerritoryFilterOptions } from "../../src/api/accessScope";
@@ -78,7 +83,9 @@ function ActivityRow({ label, value }: { label: string; value?: string | null })
 
 export default function Customer360Screen() {
   const { topInset } = useSafeScreenInsets({ aboveTabBar: true });
-  const params = useLocalSearchParams<{ customer?: string }>();
+  const params = useLocalSearchParams<
+    { customer?: string; from_drill?: string } & ReceivablesListReturnParams
+  >();
   const mobileConfig = useAuthStore((s) => s.mobileConfig);
   const permissions = useAuthStore((s) => s.permissions);
   const selectedTerritory = useDashboardFiltersStore(
@@ -96,9 +103,61 @@ export default function Customer360Screen() {
     () => (params.customer ? String(params.customer).trim() : ""),
     [params.customer]
   );
+  const fromReceivablesDrill = params.from_drill === "1";
+  const receivablesReturnList = useMemo((): ReceivablesListReturnParams | null => {
+    const widget_key = String(params.widget_key || "").trim();
+    if (!fromReceivablesDrill || !widget_key) return null;
+    return {
+      widget_key,
+      title: params.title,
+      company: params.company,
+      from_date: params.from_date,
+      to_date: params.to_date,
+      period: params.period,
+      territory: params.territory,
+      aging_bucket: params.aging_bucket,
+      aging_bucket_label: params.aging_bucket_label,
+      bucket_card_total: params.bucket_card_total,
+      territory_card_total: params.territory_card_total,
+    };
+  }, [
+    fromReceivablesDrill,
+    params.widget_key,
+    params.title,
+    params.company,
+    params.from_date,
+    params.to_date,
+    params.period,
+    params.territory,
+    params.aging_bucket,
+    params.aging_bucket_label,
+    params.bucket_card_total,
+    params.territory_card_total,
+  ]);
+
   const [selectedId, setSelectedId] = useState<string | undefined>(
     routeCustomer || undefined
   );
+
+  const leaveCustomerProfile = () => {
+    if (fromReceivablesDrill || routeCustomer) {
+      if (router.canGoBack()) {
+        goPreviousScreen();
+        return;
+      }
+      if (receivablesReturnList) {
+        returnToReceivablesWidgetList(receivablesReturnList);
+        return;
+      }
+      goPreviousScreen();
+      return;
+    }
+    if (selectedId) {
+      setSelectedId(undefined);
+      return;
+    }
+    goPreviousScreen();
+  };
 
   useEffect(() => {
     if (!routeCustomer) return;
@@ -116,6 +175,7 @@ export default function Customer360Screen() {
   const [period, setPeriod] = useState<DateRange>(() => defaultPeriod());
   const [refreshing, setRefreshing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sharingPdf, setSharingPdf] = useState(false);
   const bottomPad = useSafeBottomPadding(24, { aboveTabBar: true });
 
   const company = resolveCompanyName(permissions.scope?.company);
@@ -148,6 +208,13 @@ export default function Customer360Screen() {
 
   const currency = data?.meta.currency || "SAR";
   const customer = data?.customer;
+  const avgMonthlySalesYtd = useMemo(
+    () =>
+      computeCustomerAvgMonthlySales(data?.sales?.ytd ?? null, period.to_date) ??
+      data?.receivables?.avg_monthly_sales ??
+      null,
+    [data?.sales?.ytd, data?.receivables?.avg_monthly_sales, period.to_date]
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -187,15 +254,34 @@ export default function Customer360Screen() {
       setSending(false);
     }
   };
-  const openWhatsApp = () => {
-    const message = `Hello ${
-      customer?.name || ""
-    }, please find your account statement update.`;
-    presentWhatsAppShare({
-      message,
-      customerPhone: customer?.mobile,
-      customerName: customer?.name,
-    });
+  const openWhatsApp = async () => {
+    if (!customer?.id && !customer?.name) return;
+    setSharingPdf(true);
+    try {
+      await shareCustomerStatementPdf({
+        customer: String(customer.id || customer.name),
+        resolvedCustomer: String(customer.id || customer.name),
+        company: data?.meta?.company || company,
+        from_date: data?.meta?.from_date,
+        to_date: data?.meta?.to_date,
+        customerName: customer.name,
+        statementPdfHint: data?.statement_pdf ?? undefined,
+        expectOpenStatementLines: (data?.receivables?.outstanding ?? 0) > 0,
+        bypassPdfCache: true,
+      });
+    } catch (e: unknown) {
+      const msg =
+        e instanceof Error
+          ? e.message
+          : "Failed to share statement PDF.";
+      const hint =
+        msg.includes("Property '") && msg.includes("doesn't exist")
+          ? "\n\nTry fully reloading the app (shake device → Reload). If it persists, send Metro logs to support."
+          : "";
+      Alert.alert("Statement PDF", msg + hint);
+    } finally {
+      setSharingPdf(false);
+    }
   };
 
   if (!enabled) {
@@ -236,13 +322,10 @@ export default function Customer360Screen() {
           <ScreenHeaderNav
             onBack={() => {
               if (selectedId) {
-                setSelectedId(undefined);
-                if (routeCustomer) {
-                  router.setParams({ customer: "" });
-                }
-              } else {
-                goPreviousScreen();
+                leaveCustomerProfile();
+                return;
               }
+              goPreviousScreen();
             }}
           />
           <View style={{ flex: 1 }}>
@@ -353,20 +436,37 @@ export default function Customer360Screen() {
                   .join(" · ")}
               </Text>
               <View style={styles.actionRow}>
-                <TouchableOpacity style={styles.actionBtn} onPress={openCall}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnFlex]}
+                  onPress={openCall}
+                >
                   <Ionicons name="call" size={16} color="#667eea" />
-                  <Text style={styles.actionText}>Call</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.actionBtn} onPress={openEmail}>
-                  <Ionicons name="mail" size={16} color="#667eea" />
-                  <Text style={styles.actionText}>Email</Text>
+                  <Text style={styles.actionText} numberOfLines={1}>
+                    Call
+                  </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={styles.actionBtn}
-                  onPress={openWhatsApp}
+                  style={[styles.actionBtn, styles.actionBtnFlex]}
+                  onPress={openEmail}
                 >
-                  <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
-                  <Text style={styles.actionText}>WhatsApp</Text>
+                  <Ionicons name="mail" size={16} color="#667eea" />
+                  <Text style={styles.actionText} numberOfLines={1}>
+                    Email
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnFlex]}
+                  onPress={() => void openWhatsApp()}
+                  disabled={sharingPdf}
+                >
+                  {sharingPdf ? (
+                    <ActivityIndicator size="small" color="#25D366" />
+                  ) : (
+                    <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+                  )}
+                  <Text style={styles.actionText} numberOfLines={1}>
+                    {sharingPdf ? "Preparing…" : "WhatsApp PDF"}
+                  </Text>
                 </TouchableOpacity>
               </View>
               <View style={styles.actionRow}>
@@ -415,6 +515,12 @@ export default function Customer360Screen() {
                   compact
                 />
                 <ExecutiveKpiTile
+                  title="Avg monthly (YTD)"
+                  value={avgMonthlySalesYtd}
+                  currency={currency}
+                  compact
+                />
+                <ExecutiveKpiTile
                   title="GP %"
                   value={data.sales.gp_pct}
                   format="percent"
@@ -427,12 +533,34 @@ export default function Customer360Screen() {
                   compact
                 />
                 <ExecutiveKpiTile
-                  title="Avg Invoice"
+                  title="Avg Invoice (YTD net)"
                   value={data.sales.avg_invoice}
                   currency={currency}
                   compact
+                  currencyCompact={false}
+                  currencyDecimals={2}
                 />
               </View>
+              {data.sales.avg_invoice != null &&
+              data.sales.avg_invoice > 0 &&
+              data.sales.ytd != null &&
+              data.sales.ytd > 0 ? (
+                <Text style={styles.hint}>
+                  {data.sales.ytd_invoice_count != null &&
+                  data.sales.ytd_invoice_count > 0
+                    ? `${Math.round(data.sales.ytd_invoice_count)} invoices YTD · YTD net ÷ count`
+                    : `≈ ${Math.max(1, Math.round(data.sales.ytd / data.sales.avg_invoice))} invoices implied (YTD ÷ avg)`}
+                  {" · "}
+                  Per invoice, not avg monthly (YTD ÷ months).
+                </Text>
+              ) : null}
+              {avgMonthlySalesYtd != null &&
+              data.sales.ytd != null &&
+              data.sales.ytd > 0 ? (
+                <Text style={styles.hint}>
+                  Avg monthly (YTD) = Sales YTD ÷ months elapsed in period
+                </Text>
+              ) : null}
               {data.sales.last_invoice_date ? (
                 <Text style={styles.hint}>
                   Last invoice {data.sales.last_invoice_date}
@@ -466,7 +594,7 @@ export default function Customer360Screen() {
                 />
                 <ExecutiveKpiTile
                   title="Avg monthly sales"
-                  value={data.receivables.avg_monthly_sales}
+                  value={avgMonthlySalesYtd ?? data.receivables.avg_monthly_sales}
                   currency={currency}
                   compact
                 />
@@ -480,6 +608,12 @@ export default function Customer360Screen() {
               {data.receivables.oldest_invoice ? (
                 <Text style={styles.hint}>
                   Oldest invoice {data.receivables.oldest_invoice}
+                </Text>
+              ) : null}
+              {data.receivables.avg_monthly_sales != null ? (
+                <Text style={styles.hint}>
+                  Avg monthly sales = net sales YTD ÷ months elapsed (matches
+                  Sales YTD above)
                 </Text>
               ) : null}
               {data.receivables.avg_monthly_paid != null ? (
@@ -558,7 +692,7 @@ export default function Customer360Screen() {
             <Section
               title={
                 data.charts.months[0] === "Jan"
-                  ? "YTD trend"
+                  ? `YTD trend (${new Date().getFullYear()})`
                   : data.charts.months.length >= 12
                     ? "12-month trend"
                     : `${data.charts.months.length}-month trend`
@@ -739,6 +873,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 20,
   },
+  actionBtnFlex: { flex: 1, minWidth: 0, justifyContent: "center" },
   actionWide: { flex: 1, justifyContent: "center" },
   actionText: { fontSize: 12, fontWeight: "700", color: "#374151" },
   section: { marginBottom: 16 },

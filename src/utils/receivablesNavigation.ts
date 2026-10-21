@@ -1,5 +1,6 @@
 import { Alert } from "react-native";
 import { router } from "expo-router";
+import { goPreviousScreen } from "../components/ScreenHeaderNav";
 import type { AnalysisRow } from "../api/genericAnalysisTypes";
 import type { DrillFilters } from "../api/dashboardWidgetData";
 import { useAuthStore } from "../store/auth";
@@ -20,11 +21,15 @@ export type ReceivablesWidgetListScope = {
   to_date?: string;
   period?: string;
   selectedTerritory?: string;
+  /** Overrides dashboard territory filter (e.g. bar chart drill). */
+  drillTerritory?: string;
   /** Filter overdue / customer list to one aging bucket (API + client match). */
   aging_bucket?: string;
   aging_bucket_label?: string;
   /** Dashboard aging card total for this bucket (reconcile hint). */
   bucket_card_total?: string;
+  /** Territory bar KPI total (total due) for drill reconcile. */
+  territory_card_total?: string;
 };
 
 function rowIdLooksLikeRank(id: string): boolean {
@@ -109,7 +114,72 @@ export function customerIdFromRow(
   return label;
 }
 
-export function openCustomerFromRow(row: AnalysisRow): void {
+/** Params to reopen receivables-widget-list when stack back is unavailable. */
+export type ReceivablesListReturnParams = {
+  widget_key: string;
+  title?: string;
+  company?: string;
+  from_date?: string;
+  to_date?: string;
+  period?: string;
+  territory?: string;
+  aging_bucket?: string;
+  aging_bucket_label?: string;
+  bucket_card_total?: string;
+  territory_card_total?: string;
+};
+
+export function receivablesListReturnParamsFromScope(
+  scope: ReceivablesWidgetListScope
+): ReceivablesListReturnParams {
+  const drill = String(scope.drillTerritory || "").trim();
+  const selected = String(scope.selectedTerritory || "").trim();
+  const territory =
+    drill || (selected && selected !== "__all__" ? selected : "");
+  return {
+    widget_key: scope.widgetKey,
+    title: scope.title || "",
+    company: scope.company || "",
+    from_date: scope.from_date || "",
+    to_date: scope.to_date || "",
+    period: scope.period || "",
+    territory: territory && territory !== "__all__" ? territory : "",
+    aging_bucket: scope.aging_bucket || "",
+    aging_bucket_label: scope.aging_bucket_label || "",
+    bucket_card_total: scope.bucket_card_total || "",
+    territory_card_total: scope.territory_card_total || "",
+  };
+}
+
+export function returnToReceivablesWidgetList(
+  p: ReceivablesListReturnParams
+): void {
+  if (!p.widget_key?.trim()) {
+    goPreviousScreen();
+    return;
+  }
+  router.replace({
+    pathname: "/(tabs)/receivables-widget-list",
+    params: {
+      widget_key: p.widget_key,
+      title: p.title || "",
+      company: p.company || "",
+      from_date: p.from_date || "",
+      to_date: p.to_date || "",
+      period: p.period || "",
+      territory: p.territory || "",
+      aging_bucket: p.aging_bucket || "",
+      aging_bucket_label: p.aging_bucket_label || "",
+      bucket_card_total: p.bucket_card_total || "",
+      territory_card_total: p.territory_card_total || "",
+    },
+  });
+}
+
+export function openCustomerFromRow(
+  row: AnalysisRow,
+  returnList?: ReceivablesWidgetListScope
+): void {
   const scope = useAuthStore.getState().permissions?.scope;
   if (rowIsTerritoryAggregate(row, scope)) {
     Alert.alert(
@@ -139,9 +209,16 @@ export function openCustomerFromRow(row: AnalysisRow): void {
     return;
   }
 
+  const returnParams = returnList
+    ? receivablesListReturnParamsFromScope(returnList)
+    : null;
   router.push({
     pathname: "/(tabs)/customer-360",
-    params: { customer },
+    params: {
+      customer,
+      from_drill: "1",
+      ...(returnParams || {}),
+    },
   });
 }
 
@@ -237,11 +314,37 @@ export async function openCustomerAdvancePaymentsDrill(
   }
 }
 
+export function openReceivablesTerritoryCustomerList(
+  territory: string,
+  listScope: Omit<
+    ReceivablesWidgetListScope,
+    "widgetKey" | "title" | "drillTerritory"
+  > & { territoryCardTotal?: number }
+): void {
+  const name = String(territory || "").trim();
+  if (!name) return;
+  const { territoryCardTotal, ...rest } = listScope;
+  openReceivablesWidgetList({
+    widgetKey: "receivables_territory_customers",
+    title: `${name} · Receivables`,
+    drillTerritory: name,
+    territory_card_total:
+      territoryCardTotal != null && Number.isFinite(territoryCardTotal)
+        ? String(Math.round(territoryCardTotal))
+        : "",
+    ...rest,
+  });
+}
+
 export function openReceivablesWidgetList(
   scope: ReceivablesWidgetListScope
 ): void {
   if (!scope.widgetKey?.trim()) return;
-  const territory = String(scope.selectedTerritory || "").trim();
+  const drill = String(scope.drillTerritory || "").trim();
+  const selected = String(scope.selectedTerritory || "").trim();
+  const territory =
+    drill ||
+    (selected && selected !== "__all__" ? selected : "");
   router.push({
     pathname: "/(tabs)/receivables-widget-list",
     params: {
@@ -255,6 +358,7 @@ export function openReceivablesWidgetList(
       aging_bucket: scope.aging_bucket || "",
       aging_bucket_label: scope.aging_bucket_label || "",
       bucket_card_total: scope.bucket_card_total || "",
+      territory_card_total: scope.territory_card_total || "",
     },
   });
 }

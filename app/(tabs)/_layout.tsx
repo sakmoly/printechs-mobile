@@ -179,6 +179,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="kpi-details" options={HIDDEN_TAB} />
       <Tabs.Screen name="receivables-widget-list" options={HIDDEN_TAB} />
       <Tabs.Screen name="sales-widget-list" options={HIDDEN_TAB} />
+      <Tabs.Screen name="vat-detail" options={HIDDEN_TAB} />
       <Tabs.Screen name="inventory-widget-detail" options={HIDDEN_TAB} />
       <Tabs.Screen name="inventory-stock-by-brand" options={HIDDEN_TAB} />
       <Tabs.Screen name="inventory-item-stock" options={HIDDEN_TAB} />

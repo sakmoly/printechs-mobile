@@ -33,6 +33,43 @@ import {
   type ApproveDocumentResult,
 } from "../utils/approveResponse";
 
+const COMPLETE_DASHBOARD_TIMEOUT_MS = 90_000;
+const COMPLETE_DASHBOARD_ATTEMPTS = 2;
+
+async function getWithNetworkRetry<T>(
+  url: string,
+  params?: Record<string, unknown>,
+  options?: { timeoutMs?: number; attempts?: number }
+): Promise<T> {
+  const attempts = options?.attempts ?? COMPLETE_DASHBOARD_ATTEMPTS;
+  const timeoutMs = options?.timeoutMs ?? COMPLETE_DASHBOARD_TIMEOUT_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await http.get<T>(url, params, {
+        timeout: timeoutMs,
+        silentError: attempt < attempts - 1,
+      });
+    } catch (error) {
+      lastError = error;
+      const ax = error as { code?: string; message?: string };
+      const isTimeout =
+        ax.code === "ECONNABORTED" ||
+        String(ax.message || "")
+          .toLowerCase()
+          .includes("timeout");
+      const canRetry =
+        (isTimeout || isNetworkOrTlsError(error)) && attempt < attempts - 1;
+      if (!canRetry) throw error;
+      logger.warn(
+        `⏱ Slow dashboard API — retry ${attempt + 2}/${attempts} (${Math.round(timeoutMs / 1000)}s timeout)`
+      );
+      await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+  throw lastError;
+}
+
 async function postWithNetworkRetry<T>(
   url: string,
   payload: Record<string, unknown>,
@@ -489,15 +526,19 @@ export const optimizedApis = {
           "Calling dashboard API with access token authentication"
         );
 
-        const response = await http.get<any>(
-          "/api/method/erp_analysis.dashboard.get_complete_dashboard_data",
+        const response = await getWithNetworkRetry<any>(
+          ERP_ANALYSIS.dashboard.getCompleteDashboardData,
           baParams(params, [
             "company",
             "from_date",
             "to_date",
             "territories",
             "territory",
-          ])
+          ]),
+          {
+            timeoutMs: COMPLETE_DASHBOARD_TIMEOUT_MS,
+            attempts: COMPLETE_DASHBOARD_ATTEMPTS,
+          }
         );
 
         let apiData: any = response.message ?? response;
@@ -1829,6 +1870,23 @@ export const optimizedApis = {
     }
   },
 
+  /** Download statement PDF to cache for OS share sheet (WhatsApp, Mail, …). */
+  async shareStatementPdf(
+    customerInput: string,
+    opts?: { company?: string }
+  ) {
+    if (shouldUseMockData()) {
+      throw new Error("Demo mode: statement PDF share is not available.");
+    }
+    const { shareCustomerStatementPdf } = await import(
+      "../utils/statementPdfShare"
+    );
+    await shareCustomerStatementPdf({
+      customer: customerInput,
+      company: opts?.company,
+    });
+  },
+
   /**
    * Receivables Snapshot API
    * Returns: Total unpaid, total overdue, overdue breakdown, DSO, and collection metrics
@@ -2015,33 +2073,49 @@ export const optimizedApis = {
     limit?: number;
     offset?: number;
     sort?: string;
-  }) {
+  }): Promise<Record<string, unknown> | null> {
+    const disabled = getDisabledFallback("get_territory_receivables", {
+      customers: [],
+      total: 0,
+    });
+    if (disabled.skip) {
+      return disabled.value as Record<string, unknown>;
+    }
+
+    const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
+    http.setBaseUrl(serverUrl);
+    const accessToken = await oauthApi.getValidToken();
+    if (!accessToken) {
+      logger.warn("Territory receivables skipped — no access token");
+      return null;
+    }
+
+    const cappedLimit = Math.min(Math.max(params.limit ?? 200, 1), 300);
+
     try {
-      const disabled = getDisabledFallback("get_territory_receivables", {
-        customers: [],
-        total: 0,
-      });
-      if (disabled.skip) return disabled.value;
-
-      const serverUrl = useAuthStore.getState().serverConfig.serverUrl;
-      http.setBaseUrl(serverUrl);
-      const accessToken = await oauthApi.getValidToken();
-      if (!accessToken) throw new Error("No valid access token available");
-
-      const response = await http.get<any>(
+      const response = await getWithNetworkRetry<any>(
         "/api/method/erp_analysis.receivables.get_territory_receivables",
-        baParams(params as any, [
-          "company",
-          "territory",
-          "limit",
-          "offset",
-          "sort",
-        ])
+        baParams(
+          { ...params, limit: cappedLimit } as Record<string, unknown>,
+          ["company", "territory", "limit", "offset", "sort"]
+        ),
+        { timeoutMs: COMPLETE_DASHBOARD_TIMEOUT_MS, attempts: 2 }
       );
-      return response.message || response;
+      return (response.message || response) as Record<string, unknown>;
     } catch (error) {
-      console.error("❌ Territory Receivables API Error:", error);
-      throw error;
+      const ax = error as { code?: string; message?: string };
+      const isTimeout =
+        ax.code === "ECONNABORTED" ||
+        String(ax.message || "")
+          .toLowerCase()
+          .includes("timeout");
+      logger.warn(
+        isTimeout
+          ? "Territory receivables timed out — list will use overdue customers fallback"
+          : "Territory receivables failed — list will use overdue customers fallback",
+        ax.message || error
+      );
+      return null;
     }
   },
 

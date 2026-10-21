@@ -10,7 +10,11 @@ export function isTerritoryChipLabel(label: string): boolean {
   if (KNOWN_TERRITORIES.test(t)) return true;
   // Single-word site names from legacy expandable cards (no KPI phrases)
   if (/\s/.test(t)) return false;
-  if (/total|receivable|sales|inventory|payable|profit|margin|ratio|kpi/i.test(t)) {
+  if (
+    /total|receivable|sales|inventory|payable|profit|margin|ratio|kpi|overdue|current|advance|dso|days|customer|owing|due|pct|percent|collection/i.test(
+      t
+    )
+  ) {
     return false;
   }
   return t.length <= 20;

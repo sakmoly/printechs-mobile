@@ -7,7 +7,12 @@ import {
   type DrillStackEntry,
 } from "../api/dashboardWidgetData";
 import { bucketPointValue } from "./inventoryAgingUtils";
-import { rowOutstanding } from "./receivablesRankingRows";
+import {
+  customerMergeKey,
+  meetsMinOverdueListAmount,
+  rowOutstanding,
+  rowOverdueAmount as rankingRowOverdueAmount,
+} from "./receivablesRankingRows";
 import { rowIsTerritoryAggregate } from "./receivablesNavigation";
 import { useAuthStore } from "../store/auth";
 import type { AccessPermissionScope } from "../api/permissions";
@@ -720,6 +725,107 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function sumOverdueFromAgingRecord(raw: Record<string, unknown>): number {
+  const aging = raw.aging_buckets ?? raw.aging ?? raw.buckets;
+  if (!aging || typeof aging !== "object" || Array.isArray(aging)) return 0;
+  let sum = 0;
+  for (const [k, v] of Object.entries(aging as Record<string, unknown>)) {
+    if (isCurrentAgingBucketLabel(k)) continue;
+    const n = num(v);
+    if (n > 0) sum += n;
+  }
+  return sum;
+}
+
+function mergeOverdueMeta(
+  base: AnalysisRow,
+  overdueRow: AnalysisRow
+): AnalysisRow {
+  const cellsBase = (base.meta?.cells || {}) as Record<string, unknown>;
+  const cellsOd = (overdueRow.meta?.cells || {}) as Record<string, unknown>;
+  const outstanding = Math.max(
+    rowOutstanding(base),
+    rowOutstanding(overdueRow)
+  );
+  const overdue = Math.max(
+    rankingRowOverdueAmount(overdueRow),
+    rankingRowOverdueAmount(base),
+    rowOutstanding(overdueRow)
+  );
+  const days =
+    rowDaysOverdue(overdueRow) ??
+    rowDaysOverdue(base) ??
+    num(cellsOd.days_overdue ?? cellsBase.days_overdue);
+  const aging_bucket =
+    cellsOd.aging_bucket ??
+    overdueRow.meta?.aging_bucket ??
+    cellsBase.aging_bucket ??
+    base.meta?.aging_bucket;
+  return {
+    ...base,
+    label: base.label || overdueRow.label,
+    id: base.id || overdueRow.id,
+    value: outstanding,
+    meta: {
+      ...base.meta,
+      ...overdueRow.meta,
+      outstanding,
+      overdue,
+      days_overdue: days > 0 ? days : base.meta?.days_overdue,
+      aging_bucket,
+      cells: {
+        ...cellsBase,
+        ...cellsOd,
+        outstanding,
+        overdue,
+        days_overdue: days > 0 ? days : cellsBase.days_overdue,
+        aging_bucket,
+      },
+    },
+  };
+}
+
+/** Combine territory AR list with overdue ranking rows (by customer). */
+export function mergeTerritoryAndOverdueCustomerRows(
+  territoryRows: AnalysisRow[],
+  overdueRows: AnalysisRow[]
+): AnalysisRow[] {
+  const byKey = new Map<string, AnalysisRow>();
+  for (const row of territoryRows) {
+    const key = customerMergeKey(row);
+    if (!key) continue;
+    byKey.set(key, row);
+  }
+  for (const od of overdueRows) {
+    const key = customerMergeKey(od);
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (existing) {
+      byKey.set(key, mergeOverdueMeta(existing, od));
+    } else {
+      const outstanding = rowOutstanding(od);
+      const overdue = rankingRowOverdueAmount(od) || outstanding;
+      byKey.set(key, {
+        ...od,
+        value: Math.max(outstanding, overdue),
+        meta: {
+          ...od.meta,
+          outstanding: Math.max(outstanding, overdue),
+          overdue,
+          cells: {
+            ...((od.meta?.cells as Record<string, unknown>) || {}),
+            outstanding: Math.max(outstanding, overdue),
+            overdue,
+          },
+        },
+      });
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) => rowOutstanding(b) - rowOutstanding(a)
+  );
+}
+
 function agingMapAmount(
   aging: Record<string, unknown>,
   bucketLabel: string
@@ -750,7 +856,7 @@ export function customerAmountInAgingBucket(
   return 0;
 }
 
-function rowOverdueAmount(row: AnalysisRow): number {
+function agingRowOverdueAmount(row: AnalysisRow): number {
   const cells = (row.meta?.cells || {}) as Record<string, unknown>;
   const overdue = num(cells.overdue ?? row.meta?.overdue);
   if (overdue > 0) return overdue;
@@ -842,7 +948,10 @@ function territoryReceivablesAllToRows(
       c.customer_name ?? c.customer ?? c.party_name ?? c.name ?? id
     ).trim();
     if (!label) continue;
-    const overdue = num(c.overdue ?? c.overdue_amount);
+    let overdue = num(c.overdue ?? c.overdue_amount);
+    if (overdue < 0.01) {
+      overdue = sumOverdueFromAgingRecord(c);
+    }
     rows.push({
       id: id || label,
       label,
@@ -931,7 +1040,7 @@ export function rowAmountInAgingBucket(
   }
 
   if (!rowMatchesAgingBucketDays(row, bucketLabel)) return 0;
-  return rowOverdueAmount(row);
+  return agingRowOverdueAmount(row);
 }
 
 export function filterRowsToAgingBucket(
@@ -986,10 +1095,10 @@ export function filterRowsTrustingBucketApi(
   for (const row of customers) {
     let amt = rowAmountInAgingBucket(row, label);
     if (amt < 0.01 && rowQualifiesForAgingBucket(row, label)) {
-      amt = rowOverdueAmount(row);
+      amt = agingRowOverdueAmount(row);
     }
     if (amt < 0.01) {
-      amt = rowOverdueAmount(row);
+      amt = agingRowOverdueAmount(row);
     }
     if (amt < 0.01) continue;
     out.push({
@@ -1021,16 +1130,17 @@ export function filterRowsForBucketDisplay(
   }
 
   const trusted = filterRowsTrustingBucketApi(rows, label);
-  if (!trusted.length) return strict;
-  if (!strict.length) return trusted;
-
-  if (cardTotal == null || cardTotal <= 0) {
-    return strict.length >= trusted.length ? strict : trusted;
+  let picked: AnalysisRow[];
+  if (!trusted.length) picked = strict;
+  else if (!strict.length) picked = trusted;
+  else if (cardTotal == null || cardTotal <= 0) {
+    picked = strict.length >= trusted.length ? strict : trusted;
+  } else {
+    const strictGap = Math.abs(sumRowAmounts(strict) - cardTotal);
+    const trustedGap = Math.abs(sumRowAmounts(trusted) - cardTotal);
+    picked = trustedGap <= strictGap ? trusted : strict;
   }
-
-  const strictGap = Math.abs(sumRowAmounts(strict) - cardTotal);
-  const trustedGap = Math.abs(sumRowAmounts(trusted) - cardTotal);
-  return trustedGap <= strictGap ? trusted : strict;
+  return picked.filter(meetsMinOverdueListAmount);
 }
 
 function resolveBucketListMode(
@@ -1068,19 +1178,38 @@ function finalizeBucketListPayload(
   );
 }
 
+const TERRITORY_RECEIVABLES_UI_BUDGET_MS = 55_000;
+
+function promiseWithTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  fallback: T
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
 async function fetchTerritoryReceivablesRaw(opts: {
   company?: string;
   territory: string;
   limit: number;
 }): Promise<Record<string, unknown> | null> {
+  const cappedLimit = Math.min(Math.max(opts.limit, 1), 300);
   try {
     const { optimizedApis } = await import("../api/optimized-apis");
-    const res = (await optimizedApis.getTerritoryReceivables({
-      company: opts.company,
-      territory: opts.territory,
-      limit: opts.limit,
-      sort: "amount_desc",
-    })) as Record<string, unknown>;
+    const res = await promiseWithTimeout(
+      optimizedApis.getTerritoryReceivables({
+        company: opts.company,
+        territory: opts.territory,
+        limit: cappedLimit,
+        sort: "amount_desc",
+      }),
+      TERRITORY_RECEIVABLES_UI_BUDGET_MS,
+      null
+    );
+    if (res === null) return null;
     if (extractTerritoryReceivablesList(res).length) return res;
   } catch {
     /* try legacy method path */
@@ -1097,11 +1226,11 @@ async function fetchTerritoryReceivablesRaw(opts: {
       {
         company: opts.company,
         territory: opts.territory,
-        limit: opts.limit,
+        limit: cappedLimit,
         offset: 0,
         sort: "amount_desc",
       },
-      { silentError: true }
+      { silentError: true, timeout: 45_000 }
     );
     const body = (response.message ?? response) as Record<string, unknown>;
     if (extractTerritoryReceivablesList(body).length) return body;
@@ -1218,6 +1347,141 @@ async function fetchGenericAnalysisBucketFallback(opts: {
       RECEIVABLES_AGING_BAR_WIDGET,
       rows,
       ga.meta?.currency || "SAR"
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Mobile drill target for territory bar taps on Receivables dashboard. */
+export const RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET =
+  "receivables_territory_customers";
+
+function territoryNameValidForDrill(territory: string): boolean {
+  const t = String(territory || "").trim();
+  if (!t || t.length > 40) return false;
+  if (
+    /overdue|dso|current|total|customer|advance|receivable|owing|collection|days|%/i.test(
+      t
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export async function fetchReceivablesTerritoryCustomers(opts: {
+  company?: string;
+  territory: string;
+  from_date?: string;
+  to_date?: string;
+  period?: string;
+  limit?: number;
+}): Promise<DashboardWidgetDataResponse> {
+  const territory = String(opts.territory || "").trim();
+  if (!territoryNameValidForDrill(territory)) {
+    return shellCustomerListPayload(
+      RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET,
+      [],
+      "SAR"
+    );
+  }
+
+  const limit = Math.min(opts.limit ?? 200, 300);
+
+  // One territory-scoped API first (tap Jeddah → only Jeddah). Overdue widget
+  // runs only when territory API is empty/slow — avoids loading “all” then refresh.
+  const res = await fetchTerritoryReceivablesRaw({
+    company: opts.company,
+    territory,
+    limit,
+  });
+
+  let currency = "SAR";
+  let territoryRows: AnalysisRow[] = [];
+  if (res) {
+    currency = String(res.currency || currency);
+    territoryRows = territoryReceivablesAllToRows(
+      extractTerritoryReceivablesList(res),
+      territory
+    );
+  }
+
+  let overdueRows: AnalysisRow[] = [];
+  if (!territoryRows.length) {
+    const overduePayload = await fetchTerritoryCustomersViaDashboardWidget({
+      ...opts,
+      limit,
+    });
+    currency =
+      overduePayload?.currency ||
+      overduePayload?.meta?.currency ||
+      currency;
+    overdueRows = overduePayload?.rows?.length
+      ? dedupeCustomerRows(
+          filterAgingBucketCustomerRows(rowsFromPayload(overduePayload))
+        )
+      : [];
+  }
+
+  const merged = mergeTerritoryAndOverdueCustomerRows(
+    territoryRows,
+    overdueRows
+  );
+
+  if (merged.length) {
+    const mode =
+      territoryRows.length > 0 ? "full" : "overdue_only";
+    return {
+      ...shellCustomerListPayload(
+        RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET,
+        merged,
+        currency
+      ),
+      meta: {
+        currency,
+        source: territoryRows.length
+          ? "territory_receivables"
+          : "overdue_customers_table",
+        territory_list_mode: mode,
+      },
+    };
+  }
+
+  return shellCustomerListPayload(
+    RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET,
+    [],
+    currency
+  );
+}
+
+async function fetchTerritoryCustomersViaDashboardWidget(opts: {
+  company?: string;
+  from_date?: string;
+  to_date?: string;
+  period?: string;
+  territory: string;
+  limit?: number;
+}): Promise<DashboardWidgetDataResponse | null> {
+  try {
+    const overdue = await fetchDashboardWidgetData({
+      widget_key: "receivables_overdue_customers_table",
+      company: opts.company,
+      from_date: opts.from_date,
+      to_date: opts.to_date,
+      period: opts.period,
+      filters: { territory: [opts.territory] },
+      limit: opts.limit ?? 500,
+      show_ly: false,
+    });
+    const rows = dedupeCustomerRows(
+      filterAgingBucketCustomerRows(rowsFromPayload(overdue))
+    );
+    if (!rows.length) return null;
+    return shellCustomerListPayload(
+      RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET,
+      rows,
+      overdue.currency || overdue.meta?.currency || "SAR"
     );
   } catch {
     return null;

@@ -36,7 +36,7 @@ export function useCustomer360(
         ...params,
       }),
     enabled: Boolean(customer) && options?.enabled !== false,
-    staleTime: 60_000,
+    staleTime: 0,
     retry: 1,
     placeholderData: (previousData, previousQuery) => {
       const prevCustomer = previousQuery?.queryKey?.[1];

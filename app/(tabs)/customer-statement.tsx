@@ -16,10 +16,16 @@ import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { optimizedApis } from "../../src/api/optimized-apis";
+import {
+  defaultStatementFromDate,
+  parseFlexibleIsoDate,
+  parseStatementLineOutstanding,
+} from "../../src/api/customerStatement";
 import { resolveCompanyName } from "../../src/api/apiResilience";
 import { resolveCustomerParty } from "../../src/api/customer360";
 import { useAuthStore } from "../../src/store/auth";
 import { ScreenHeaderNav } from "../../src/components/ScreenHeaderNav";
+import { formatStatementDateDdMmYyyy } from "../../src/utils/statementDateFormat";
 
 const formatCurrency = (value: number) =>
   (value || 0).toLocaleString("en-US", {
@@ -27,13 +33,8 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 0,
   });
 
-function lineOutstanding(it: {
-  outstanding?: number;
-  outstanding_amount?: number;
-  balance?: number;
-}): number {
-  const n = Number(it.outstanding ?? it.outstanding_amount);
-  return Number.isFinite(n) ? n : 0;
+function lineOutstanding(it: unknown): number {
+  return parseStatementLineOutstanding(it);
 }
 
 function lineSortKey(it: {
@@ -70,9 +71,9 @@ function isInvoiceOverdue(
   due_date: string | undefined,
   asOf: string | undefined
 ): boolean {
-  const due = String(due_date || "").trim().slice(0, 10);
-  const ref = String(asOf || localDateIso()).trim().slice(0, 10);
-  if (due.length < 10 || ref.length < 10) return false;
+  const due = parseFlexibleIsoDate(due_date);
+  const ref = parseFlexibleIsoDate(asOf) || localDateIso();
+  if (!due || !ref) return false;
   return due < ref;
 }
 
@@ -92,9 +93,8 @@ export default function CustomerStatementScreen() {
       if (!customer) return null as any;
       const party = await resolveCustomerParty(String(customer));
       const today = new Date();
-      const year = today.getFullYear();
       const toIso = (d: Date) => d.toISOString().slice(0, 10);
-      const fromDate = `${year}-01-01`;
+      const fromDate = defaultStatementFromDate();
       const toDate = toIso(today);
       return optimizedApis.getCustomerStatement({
         customer: party,
@@ -129,7 +129,7 @@ export default function CustomerStatementScreen() {
 
     const asOf = data?.to_date || localDateIso();
     const open = items
-      .filter((it) => lineOutstanding(it) > 0)
+      .filter((it) => lineOutstanding(it) !== 0)
       .slice()
       .sort((a, b) => lineSortKey(a).localeCompare(lineSortKey(b)));
 
@@ -196,7 +196,8 @@ export default function CustomerStatementScreen() {
           <View style={styles.metaCard}>
             <Text style={styles.metaTitle}>{data.customer}</Text>
             <Text style={styles.metaSub}>
-              Period: {data.from_date} → {data.to_date}
+              Period: {formatStatementDateDdMmYyyy(data.from_date)} →{" "}
+              {formatStatementDateDdMmYyyy(data.to_date)}
             </Text>
           </View>
 
@@ -247,27 +248,43 @@ export default function CustomerStatementScreen() {
                     ]}
                   >
                     <Text
-                      style={[styles.td, styles.invoiceCol]}
+                      style={[
+                        styles.td,
+                        styles.invoiceCol,
+                        it.isOverdue && styles.overdueText,
+                      ]}
                       numberOfLines={1}
                     >
                       {it.invoice}
                     </Text>
                     <Text style={[styles.td, styles.dateCol]}>
-                      {it.posting_date}
+                      {formatStatementDateDdMmYyyy(it.posting_date)}
                     </Text>
                     <Text
                       style={[
                         styles.td,
                         styles.dateCol,
-                        it.isOverdue && styles.dueOverdue,
+                        it.isOverdue && styles.overdueText,
                       ]}
                     >
-                      {it.due_date}
+                      {formatStatementDateDdMmYyyy(it.due_date)}
                     </Text>
-                    <Text style={[styles.td, styles.amountCol]}>
+                    <Text
+                      style={[
+                        styles.td,
+                        styles.amountCol,
+                        it.isOverdue && styles.overdueText,
+                      ]}
+                    >
                       {formatCurrency(Number(it.amount) || 0)}
                     </Text>
-                    <Text style={[styles.td, styles.amountCol]}>
+                    <Text
+                      style={[
+                        styles.td,
+                        styles.amountCol,
+                        it.isOverdue && styles.overdueText,
+                      ]}
+                    >
                       {formatCurrency(it.lineOutstanding)}
                     </Text>
                     <Text
@@ -424,7 +441,7 @@ const styles = StyleSheet.create({
   tableHeaderRow: { backgroundColor: "#F3F4F6" },
   tableRowEven: { backgroundColor: "#F9FAFB" },
   tableRowOverdue: { backgroundColor: "#fef2f2" },
-  dueOverdue: { color: "#dc2626", fontWeight: "800" },
+  overdueText: { color: "#dc2626", fontWeight: "800" },
   tableEmpty: {
     paddingVertical: 20,
     paddingHorizontal: 12,
@@ -450,7 +467,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
   },
   balanceCellOverdue: {
-    color: "#b45309",
+    color: "#dc2626",
   },
   balanceCellCurrent: {
     color: "#16a34a",

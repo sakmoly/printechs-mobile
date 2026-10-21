@@ -617,7 +617,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           // Menu is authoritative for UI; if already set false, keep deny
           if (menus[key] === false) continue;
           menus[key] = view;
-        } else if (type === "api") {
+        } else if (
+          type === "api" ||
+          /^erp_analysis\./i.test(key) ||
+          /^get_[a-z0-9_]+$/i.test(key)
+        ) {
           // Deny wins if either Menu or API says false
           if (menus[key] === false) continue;
           if (!(key in menus)) menus[key] = view;

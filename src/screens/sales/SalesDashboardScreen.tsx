@@ -9,7 +9,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
 } from "react-native";
 import { useBootstrapStore } from "../../store/bootstrap";
 import { useAuthStore } from "../../store/auth";
@@ -31,6 +30,9 @@ import { buildSalesLayout } from "./buildSalesSections";
 import { useSalesBoardWidgets } from "./useSalesBoardWidgets";
 import { useDashboardFreshness } from "../../hooks/useDashboardFreshness";
 import { DashboardFreshnessFooter } from "../../components/dashboard/DashboardFreshnessFooter";
+import { DashboardRefreshBanner } from "../../components/dashboard/DashboardRefreshBanner";
+import { DashboardRefreshControl } from "../../components/dashboard/DashboardRefreshControl";
+import { useDashboardPullRefresh } from "../../hooks/useDashboardPullRefresh";
 import { resolvePeriod, type PeriodPreset } from "../../utils/period";
 import { ALL_TERRITORIES } from "../../utils/dashboardTerritory";
 import { SALES } from "./salesTheme";
@@ -62,14 +64,22 @@ export function SalesDashboardScreen({ title, subtitle }: Props) {
   } = useDashboardScope();
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("ytd");
   const [compareMode, setCompareMode] = useState<CompareMode>("ly");
-  const [refreshing, setRefreshing] = useState(false);
   const filterBarRef = useRef<SalesFilterBarHandle>(null);
 
   const period = useMemo(() => resolvePeriod(periodPreset), [periodPreset]);
   const showLy = compareMode === "ly";
 
-  const { widgetDefs, widgetMap, isLoading, isFetching, refreshBoard, cachedAt, dataUpdatedAt, fallbackQueries, isOffline } =
-    useSalesBoardWidgets({
+  const {
+    widgetDefs,
+    widgetMap,
+    isLoading,
+    isFetching,
+    refreshBoard,
+    cachedAt,
+    dataUpdatedAt,
+    fallbackQueries,
+    isOffline,
+  } = useSalesBoardWidgets({
       company,
       companyReady,
       from_date: period.from_date,
@@ -167,14 +177,7 @@ export function SalesDashboardScreen({ title, subtitle }: Props) {
   const screenSubtitle =
     subtitle || `${companyShort} • ${businessType}`;
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await refreshBoard();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshBoard]);
+  const { refreshing, onRefresh } = useDashboardPullRefresh(refreshBoard);
 
   const hasContent =
     layout.overviewKpis.length > 0 ||
@@ -218,13 +221,17 @@ export function SalesDashboardScreen({ title, subtitle }: Props) {
         />
       </View>
 
+      {refreshing ? (
+        <DashboardRefreshBanner tintColor={SALES.link} />
+      ) : null}
+
       <ScrollView
         contentContainerStyle={styles.body}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
+          <DashboardRefreshControl
+            refreshing={refreshing || isFetching}
             onRefresh={onRefresh}
             tintColor={SALES.link}
           />
@@ -278,10 +285,12 @@ export function SalesDashboardScreen({ title, subtitle }: Props) {
           />
         ))}
 
-        {!loadState.showLoading && freshness.label ? (
+        {!loadState.showLoading && (refreshing || freshness.label) ? (
           <DashboardFreshnessFooter
-            label={freshness.label}
-            isFetching={freshness.isFetching}
+            label={
+              refreshing ? "Refreshing dashboard…" : (freshness.label ?? "")
+            }
+            isFetching={refreshing || freshness.isFetching}
             tintColor={SALES.link}
             subtitleColor={SALES.subtitle}
           />

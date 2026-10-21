@@ -25,6 +25,8 @@ export type MobileModules = {
   approval_analytics: boolean;
   salesperson: boolean;
   product_performance: boolean;
+  /** VAT filing dashboard (ZATCA-aligned) */
+  vat: boolean;
 };
 
 /** Org dimensions that vary by ERPNext client site (logical keys — open via string) */
@@ -110,6 +112,7 @@ export const DEFAULT_MOBILE_CONFIG: MobileConfig = {
     approval_analytics: true,
     salesperson: true,
     product_performance: true,
+    vat: true,
   },
   dimensions: { ...DEFAULT_DIMENSIONS },
   apis: {},
@@ -221,7 +224,9 @@ export async function fetchMobileConfig(): Promise<MobileConfig> {
 
   try {
     const response = await http.get<{ message?: MobileConfig } | MobileConfig>(
-      ERP_ANALYSIS.config.getMobileConfig
+      ERP_ANALYSIS.config.getMobileConfig,
+      undefined,
+      { silentError: true }
     );
     const payload =
       response && typeof response === "object" && "message" in response

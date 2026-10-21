@@ -3,7 +3,12 @@ import { useAuthStore } from "../store/auth";
 import { oauthApi } from "./oauth";
 import { ERP_ANALYSIS } from "./endpoints";
 import { isApiEnabled } from "./mobileConfig";
-import { isMissingBaMethodError, isBaPermissionDeniedError, isBaSchemaMismatchError } from "./baErrors";
+import {
+  isMissingBaMethodError,
+  isBaPermissionDeniedError,
+  isBaSchemaMismatchError,
+  isTransientGatewayError,
+} from "./baErrors";
 import {
   BaApiUnavailableError,
   demoDataOnlyWhenNoServer,
@@ -271,18 +276,129 @@ function needsReceivablesEnrichment(data: Customer360): boolean {
   );
 }
 
+/** BA often sends 0 instead of null for missing Today / MTD / YTD. */
+function isMissingPeriodSales(v: number | null | undefined): boolean {
+  return v == null || v === 0;
+}
+
+/** Desk/SDB-backed sales block from get_customer_360 — do not overwrite with statement/SI. */
+function hasAuthoritativeBaSales(
+  s: Customer360["sales"] | null | undefined
+): boolean {
+  if (!s) return false;
+  const gpPct = s.gp_pct;
+  return (
+    !isMissingPeriodSales(s.ytd) &&
+    !isMissingPeriodSales(s.mtd) &&
+    gpPct != null &&
+    Number.isFinite(Number(gpPct))
+  );
+}
+
+/** BA bug pattern: COGS missing → gp ≈ ytd and gp_pct ≈ 100 (desk GP report lower). */
+function salesGpLooksLikeMissingCogs(
+  s: Customer360["sales"] | null | undefined
+): boolean {
+  if (!s?.ytd || !(Number(s.ytd) > 0)) return false;
+  const ytd = Number(s.ytd);
+  const gp =
+    s.gp != null && Number.isFinite(Number(s.gp)) ? Number(s.gp) : null;
+  const pct =
+    s.gp_pct != null && Number.isFinite(Number(s.gp_pct))
+      ? Number(s.gp_pct)
+      : null;
+  if (pct != null && pct >= 99) return true;
+  if (gp != null && gp >= ytd * 0.99) return true;
+  return false;
+}
+
+/** When API still sends ~100% GP, recompute from submitted SI item valuation. */
+async function reconcileSuspiciousSalesGp(
+  next: Customer360,
+  params: {
+    company?: string;
+    from_date?: string;
+    to_date?: string;
+  },
+  party: string
+): Promise<void> {
+  if (!salesGpLooksLikeMissingCogs(next.sales)) return;
+  const partyId = String(next.customer.id || party).trim();
+  if (!partyId) return;
+
+  const fromInvoices = await fetchCustomerSalesFromInvoices({
+    customer: partyId,
+    company: params.company || next.meta.company || undefined,
+    from_date: params.from_date || `${new Date().getFullYear()}-01-01`,
+    to_date: params.to_date || toIsoDate(new Date()),
+  });
+
+  if (
+    fromInvoices?.gp != null &&
+    fromInvoices.gp_pct != null &&
+    fromInvoices.gp_pct < 95 &&
+    Number.isFinite(fromInvoices.gp_pct)
+  ) {
+    next.sales = {
+      ...(next.sales || {
+        today: null,
+        mtd: null,
+        ytd: null,
+        ytd_ly: null,
+        growth_pct: null,
+        gp: null,
+        gp_pct: null,
+        avg_invoice: null,
+        last_invoice_date: null,
+      }),
+      gp: fromInvoices.gp,
+      gp_pct: fromInvoices.gp_pct,
+    };
+    if (__DEV__) {
+      console.log("📊 Customer GP reconciled from SI (API had ~100% margin):", {
+        gp: fromInvoices.gp,
+        gpPct: fromInvoices.gp_pct,
+        ytd: next.sales.ytd,
+      });
+    }
+  }
+}
+
+function needsAvgInvoiceEnrichment(
+  s: Customer360["sales"] | null | undefined
+): boolean {
+  // Backend sends avg_invoice (incl. 0 when no YTD invoices) — do not recompute.
+  return s?.avg_invoice == null;
+}
+
 function needsSalesEnrichment(data: Customer360): boolean {
+  if (hasAuthoritativeBaSales(data.sales)) return false;
   const s = data.sales;
   if (!s) return true;
-  // BA often sends YTD (or a partial recent-invoice sum) without Today / MTD / GP
   return (
-    s.today == null ||
-    s.mtd == null ||
-    s.ytd == null ||
+    isMissingPeriodSales(s.today) ||
+    isMissingPeriodSales(s.mtd) ||
+    isMissingPeriodSales(s.ytd) ||
     s.gp == null ||
-    s.gp_pct == null ||
-    s.avg_invoice == null
+    s.gp_pct == null
   );
+}
+
+/** Prefer live SI totals when BA/statement left placeholders at 0. */
+function preferLiveSalesMetric(
+  fromInvoices: number | null | undefined,
+  existing: number | null | undefined
+): number | null {
+  if (fromInvoices != null && Number.isFinite(fromInvoices) && fromInvoices > 0) {
+    return fromInvoices;
+  }
+  if (existing != null && Number.isFinite(existing) && existing !== 0) {
+    return existing;
+  }
+  if (fromInvoices != null && Number.isFinite(fromInvoices)) {
+    return fromInvoices;
+  }
+  return existing ?? null;
 }
 
 function monthsBetweenInclusive(fromIso: string, toIso: string): number {
@@ -297,6 +413,25 @@ function monthsBetweenInclusive(fromIso: string, toIso: string): number {
   return Math.max(1, months);
 }
 
+/**
+ * Desk-aligned avg monthly sales: calendar YTD net ÷ months Jan…as-of.
+ * Not avg invoice (YTD ÷ invoice count).
+ */
+export function computeCustomerAvgMonthlySales(
+  ytd: number | null | undefined,
+  toDate?: string | null
+): number | null {
+  if (ytd == null || !Number.isFinite(Number(ytd)) || Number(ytd) <= 0) {
+    return null;
+  }
+  const end = toDate ? new Date(toDate) : new Date();
+  const endSafe = Number.isNaN(end.getTime()) ? new Date() : end;
+  const yearStart = toIsoDate(new Date(endSafe.getFullYear(), 0, 1));
+  const to = toIsoDate(endSafe);
+  const months = monthsBetweenInclusive(yearStart, to);
+  return months > 0 ? Number(ytd) / months : null;
+}
+
 function toIsoDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -304,64 +439,185 @@ function toIsoDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Net sales per invoice — aligned with SDB / desk `Net_Amount` and sales KPI cards. */
+function salesInvoiceNetAmount(row: Record<string, unknown>): number {
+  return (
+    Number(
+      row.base_net_total ??
+        row.net_total ??
+        row.base_grand_total ??
+        row.grand_total
+    ) || 0
+  );
+}
+
+function paymentEntryReceivedAmount(row: Record<string, unknown>): number {
+  const pt = String(row.payment_type || "").trim();
+  if (pt && pt !== "Receive") return 0;
+  const candidates = [row.base_received_amount, row.received_amount];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n !== 0) return Math.abs(n);
+  }
+  const fallback = [row.base_paid_amount, row.paid_amount];
+  for (const c of fallback) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n !== 0) return Math.abs(n);
+  }
+  return 0;
+}
+
+function uniquePartyCandidates(id?: string, name?: string): string[] {
+  const out: string[] = [];
+  for (const v of [id, name]) {
+    const t = String(v || "").trim();
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** Load Receive payments — tries Customer id and display name, with/without company. */
+async function listCustomerPaymentEntries(opts: {
+  partyCandidates: string[];
+  company?: string;
+  from_date: string;
+  to_date: string;
+}): Promise<Record<string, unknown>[]> {
+  await prepare();
+  const fields = [
+    "name",
+    "posting_date",
+    "paid_amount",
+    "received_amount",
+    "base_paid_amount",
+    "base_received_amount",
+    "payment_type",
+  ];
+
+  for (const party of opts.partyCandidates) {
+    for (const useCompany of [true, false]) {
+      for (const paymentType of ["Receive", ""] as const) {
+        const filters: unknown[] = [
+          ["party_type", "=", "Customer"],
+          ["party", "=", party],
+          ["docstatus", "=", 1],
+          ["posting_date", ">=", opts.from_date],
+          ["posting_date", "<=", opts.to_date],
+        ];
+        if (paymentType) {
+          filters.push(["payment_type", "=", paymentType]);
+        }
+        if (useCompany && opts.company) {
+          filters.push(["company", "=", opts.company]);
+        }
+        try {
+          const res = await http.get<any>(
+            "/api/method/frappe.client.get_list",
+            {
+              doctype: "Payment Entry",
+              fields: JSON.stringify(fields),
+              filters: JSON.stringify(filters),
+              limit_page_length: 5000,
+              order_by: "posting_date asc",
+            },
+            { silentError: true }
+          );
+          const raw = unwrapFrappeMessage(res);
+          const rows = Array.isArray(raw)
+            ? raw
+            : Array.isArray(res?.message)
+              ? res.message
+              : [];
+          if (rows.length) return rows as Record<string, unknown>[];
+        } catch {
+          /* next candidate */
+        }
+      }
+    }
+  }
+  return [];
+}
+
+function paymentsToMonthlyBuckets(
+  rows: Record<string, unknown>[],
+  monthCount: number
+): number[] {
+  const collection = Array.from({ length: monthCount }, () => 0);
+  for (const row of rows) {
+    const d = String(row.posting_date || "");
+    if (!d || d.length < 7) continue;
+    const mi = Number(d.slice(5, 7)) - 1;
+    if (mi < 0 || mi >= monthCount) continue;
+    collection[mi] += paymentEntryReceivedAmount(row);
+  }
+  return collection;
+}
+
+function mergeCollectionSeries(
+  ba: number[] | undefined,
+  live: number[] | undefined,
+  len: number
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < len; i++) {
+    const l = live?.[i] ?? 0;
+    const b = ba?.[i] ?? 0;
+    if (l > 0) out.push(l);
+    else if (b > 0) out.push(b);
+    else out.push(0);
+  }
+  return out;
+}
+
+/** Prefer BA/SDB monthly bars when present; use live SI only to fill zero months. */
+function mergeSalesSeries(
+  ba: number[] | undefined,
+  live: number[] | undefined,
+  len: number,
+  preferBaWhenPositive: boolean
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < len; i++) {
+    const b = ba?.[i] ?? 0;
+    const l = live?.[i] ?? 0;
+    if (preferBaWhenPositive && b > 0) out.push(b);
+    else if (l > 0) out.push(l);
+    else if (b > 0) out.push(b);
+    else out.push(0);
+  }
+  return out;
+}
+
+function collectionSeriesHasValue(arr?: number[]): boolean {
+  return Boolean(arr?.some((n) => Number(n) > 0));
+}
+
 /**
  * Live Payment Entry totals → average monthly amount paid by customer.
  */
 async function fetchAvgMonthlyPaid(params: {
   customer: string;
+  customer_name?: string;
   company?: string;
 }): Promise<number | null> {
   try {
-    await prepare();
     const today = new Date();
     const yearStart = `${today.getFullYear()}-01-01`;
     const to = toIsoDate(today);
-
-    const filters: unknown[] = [
-      ["party_type", "=", "Customer"],
-      ["party", "=", params.customer],
-      ["docstatus", "=", 1],
-      ["payment_type", "=", "Receive"],
-      ["posting_date", ">=", yearStart],
-      ["posting_date", "<=", to],
-    ];
-    if (params.company) {
-      filters.push(["company", "=", params.company]);
-    }
-
-    const res = await http.get<any>("/api/method/frappe.client.get_list", {
-      doctype: "Payment Entry",
-      fields: JSON.stringify([
-        "name",
-        "posting_date",
-        "paid_amount",
-        "received_amount",
-        "base_paid_amount",
-        "base_received_amount",
-      ]),
-      filters: JSON.stringify(filters),
-      limit_page_length: 500,
-      order_by: "posting_date desc",
+    const rows = await listCustomerPaymentEntries({
+      partyCandidates: uniquePartyCandidates(
+        params.customer,
+        params.customer_name
+      ),
+      company: params.company,
+      from_date: yearStart,
+      to_date: to,
     });
-
-    const raw = unwrapFrappeMessage(res);
-    const rows = Array.isArray(raw)
-      ? raw
-      : Array.isArray(res?.message)
-        ? res.message
-        : [];
-    if (!rows.length) return 0;
+    if (!rows.length) return null;
 
     let total = 0;
     for (const row of rows) {
-      const amt =
-        Number(
-          row.base_received_amount ??
-            row.received_amount ??
-            row.base_paid_amount ??
-            row.paid_amount
-        ) || 0;
-      total += Math.abs(amt);
+      total += paymentEntryReceivedAmount(row);
     }
     const months = Math.max(1, today.getMonth() + 1);
     return total / months;
@@ -414,24 +670,26 @@ function paidFromStatementItems(stmt: any): number | null {
 
 async function fetchCustomerMonthlyTrend(params: {
   customer: string;
+  customer_name?: string;
   company?: string;
   to_date?: string;
 }): Promise<{ sales: number[]; sales_ly: number[]; collection: number[] } | null> {
+  const end = params.to_date ? new Date(params.to_date) : new Date();
+  const endSafe = Number.isNaN(end.getTime()) ? new Date() : end;
+  const year = endSafe.getFullYear();
+  const yearStart = `${year}-01-01`;
+  const to = toIsoDate(endSafe);
+  const lyStart = `${year - 1}-01-01`;
+  const lyEnd = toIsoDate(
+    new Date(year - 1, endSafe.getMonth(), endSafe.getDate())
+  );
+  const monthCount = endSafe.getMonth() + 1;
+  const sales = Array.from({ length: monthCount }, () => 0);
+  const sales_ly = Array.from({ length: monthCount }, () => 0);
+  let collection = Array.from({ length: monthCount }, () => 0);
+
   try {
     await prepare();
-    const end = params.to_date ? new Date(params.to_date) : new Date();
-    const endSafe = Number.isNaN(end.getTime()) ? new Date() : end;
-    const year = endSafe.getFullYear();
-    const yearStart = `${year}-01-01`;
-    const to = toIsoDate(endSafe);
-    const lyStart = `${year - 1}-01-01`;
-    const lyEnd = toIsoDate(
-      new Date(year - 1, endSafe.getMonth(), endSafe.getDate())
-    );
-    const monthCount = endSafe.getMonth() + 1;
-    const sales = Array.from({ length: monthCount }, () => 0);
-    const sales_ly = Array.from({ length: monthCount }, () => 0);
-    const collection = Array.from({ length: monthCount }, () => 0);
 
     const siFilters: unknown[] = [
       ["customer", "=", params.customer],
@@ -449,7 +707,7 @@ async function fetchCustomerMonthlyTrend(params: {
         "base_grand_total",
       ]),
       filters: JSON.stringify(siFilters),
-      limit_page_length: 500,
+      limit_page_length: 5000,
       order_by: "posting_date asc",
     });
     const siRaw = unwrapFrappeMessage(siRes);
@@ -463,8 +721,7 @@ async function fetchCustomerMonthlyTrend(params: {
       if (!d || d.length < 7) continue;
       const mi = Number(d.slice(5, 7)) - 1;
       if (mi < 0 || mi >= monthCount) continue;
-      sales[mi] +=
-        Number(row.base_grand_total ?? row.grand_total) || 0;
+      sales[mi] += salesInvoiceNetAmount(row);
     }
 
     const siLyFilters: unknown[] = [
@@ -497,57 +754,40 @@ async function fetchCustomerMonthlyTrend(params: {
       if (!d || d.length < 7) continue;
       const mi = Number(d.slice(5, 7)) - 1;
       if (mi < 0 || mi >= monthCount) continue;
-      sales_ly[mi] +=
-        Number(row.base_grand_total ?? row.grand_total) || 0;
+      sales_ly[mi] += salesInvoiceNetAmount(row);
     }
 
-    const peFilters: unknown[] = [
-      ["party_type", "=", "Customer"],
-      ["party", "=", params.customer],
-      ["docstatus", "=", 1],
-      ["payment_type", "=", "Receive"],
-      ["posting_date", ">=", yearStart],
-      ["posting_date", "<=", to],
-    ];
-    if (params.company) peFilters.push(["company", "=", params.company]);
-
-    const peRes = await http.get<any>("/api/method/frappe.client.get_list", {
-      doctype: "Payment Entry",
-      fields: JSON.stringify([
-        "posting_date",
-        "paid_amount",
-        "received_amount",
-        "base_paid_amount",
-        "base_received_amount",
-      ]),
-      filters: JSON.stringify(peFilters),
-      limit_page_length: 500,
-      order_by: "posting_date asc",
+    const peRows = await listCustomerPaymentEntries({
+      partyCandidates: uniquePartyCandidates(
+        params.customer,
+        params.customer_name
+      ),
+      company: params.company,
+      from_date: yearStart,
+      to_date: to,
     });
-    const peRaw = unwrapFrappeMessage(peRes);
-    const peRows = Array.isArray(peRaw)
-      ? peRaw
-      : Array.isArray(peRes?.message)
-        ? peRes.message
-        : [];
-    for (const row of peRows) {
-      const d = String(row.posting_date || "");
-      if (!d || d.length < 7) continue;
-      const mi = Number(d.slice(5, 7)) - 1;
-      if (mi < 0 || mi >= monthCount) continue;
-      const amt =
-        Number(
-          row.base_received_amount ??
-            row.received_amount ??
-            row.base_paid_amount ??
-            row.paid_amount
-        ) || 0;
-      collection[mi] += Math.abs(amt);
-    }
+    collection = paymentsToMonthlyBuckets(peRows, monthCount);
 
     return { sales, sales_ly, collection };
   } catch (e) {
-    console.warn("⚠️ Customer monthly trend fallback failed:", e);
+    console.warn("⚠️ Customer monthly trend (SI) failed:", e);
+    try {
+      const peRows = await listCustomerPaymentEntries({
+        partyCandidates: uniquePartyCandidates(
+          params.customer,
+          params.customer_name
+        ),
+        company: params.company,
+        from_date: yearStart,
+        to_date: to,
+      });
+      collection = paymentsToMonthlyBuckets(peRows, monthCount);
+      if (collectionSeriesHasValue(collection)) {
+        return { sales, sales_ly, collection };
+      }
+    } catch {
+      /* ignore */
+    }
     return null;
   }
 }
@@ -558,51 +798,53 @@ async function fetchCustomerMonthlyTrend(params: {
  */
 async function ensureCustomerChartsYtd(
   data: Customer360,
-  params: { customer: string; company?: string; to_date?: string }
+  params: {
+    customer: string;
+    customer_name?: string;
+    company?: string;
+    to_date?: string;
+  }
 ): Promise<Customer360["charts"]> {
   const end = params.to_date ? new Date(params.to_date) : new Date();
   const endSafe = Number.isNaN(end.getTime()) ? new Date() : end;
   const padded = completeCustomerChartsYtd(data.charts, endSafe);
   if (!padded?.months?.length) return data.charts ?? null;
 
-  const originalLabels = data.charts?.months || [];
-  const originalIdx = new Set<number>();
-  for (const label of originalLabels) {
-    const mi = monthLabelToIndex(label);
-    if (mi != null) originalIdx.add(mi);
-  }
-
-  const needsFill =
-    padded.months.length > originalLabels.length ||
-    !originalIdx.has(0) ||
-    (endSafe.getMonth() >= 1 && !originalIdx.has(1));
-
   const hasBaSalesLy = Array.isArray(data.charts?.sales_ly);
   const hasBaGrowth = Array.isArray(data.charts?.sales_growth_pct);
-  const needsLy = !hasBaSalesLy || !hasBaGrowth;
 
-  let live: {
-    sales: number[];
-    sales_ly: number[];
-    collection: number[];
-  } | null = null;
-
-  if (needsFill || needsLy) {
-    live = await fetchCustomerMonthlyTrend(params);
-  }
+  /** Live SI + PE — source of truth for month sales (BA often sends 0 for skipped months). */
+  const live = await fetchCustomerMonthlyTrend(params);
 
   let sales = padded.sales;
+  const len = padded.months?.length || padded.sales?.length || 0;
   let collection = padded.collection;
 
-  if (live && needsFill) {
-    sales = (padded.sales || []).map((v, i) =>
-      originalIdx.has(i) && v != null ? Number(v) : live!.sales[i] ?? 0
+  const preferBaChartSales =
+    hasAuthoritativeBaSales(data.sales) &&
+    collectionSeriesHasValue(padded.sales);
+
+  if (live?.sales?.length && len > 0) {
+    sales = mergeSalesSeries(
+      padded.sales,
+      live.sales,
+      len,
+      preferBaChartSales
     );
-    collection = (padded.collection || []).map((v, i) =>
-      originalIdx.has(i) && v != null ? Number(v) : live!.collection[i] ?? 0
+  }
+
+  if (live?.collection?.length && len > 0) {
+    collection = mergeCollectionSeries(
+      padded.collection,
+      live.collection,
+      len
     );
-    if (!Array.isArray(data.charts?.sales)) sales = live.sales;
-    if (!Array.isArray(data.charts?.collection)) collection = live.collection;
+  } else if (
+    len > 0 &&
+    !collectionSeriesHasValue(padded.collection) &&
+    live?.collection?.length
+  ) {
+    collection = live.collection;
   }
 
   const salesSeries = sales || [];
@@ -634,9 +876,49 @@ async function ensureCustomerChartsYtd(
       sales: merged.sales,
       sales_ly: merged.sales_ly,
       growth: merged.sales_growth_pct,
+      collection: merged.collection,
     });
   }
   return merged;
+}
+
+async function fetchYtdInvoiceCountForAvg(params: {
+  customer: string;
+  company?: string;
+}): Promise<number | null> {
+  try {
+    await prepare();
+    const todayIso = toIsoDate(new Date());
+    const yearStart = `${new Date().getFullYear()}-01-01`;
+    const filters: unknown[] = [
+      ["customer", "=", params.customer],
+      ["docstatus", "=", 1],
+      ["posting_date", ">=", yearStart],
+      ["posting_date", "<=", todayIso],
+    ];
+    if (params.company) {
+      filters.push(["company", "=", params.company]);
+    }
+    const res = await http.get<any>(
+      "/api/method/frappe.client.get_list",
+      {
+        doctype: "Sales Invoice",
+        fields: JSON.stringify(["name"]),
+        filters: JSON.stringify(filters),
+        limit_page_length: 5000,
+      },
+      { silentError: true }
+    );
+    const raw = unwrapFrappeMessage(res);
+    const rows = Array.isArray(raw)
+      ? raw
+      : Array.isArray(res?.message)
+        ? res.message
+        : [];
+    return rows.length > 0 ? rows.length : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchCustomerSalesFromInvoices(params: {
@@ -679,7 +961,7 @@ async function fetchCustomerSalesFromInvoices(params: {
       doctype: "Sales Invoice",
       fields: JSON.stringify(fields),
       filters: JSON.stringify(filters),
-      limit_page_length: 500,
+      limit_page_length: 5000,
       order_by: "posting_date desc",
     });
 
@@ -690,17 +972,7 @@ async function fetchCustomerSalesFromInvoices(params: {
         ? res.message
         : [];
     if (!rows.length) {
-      return {
-        today: 0,
-        mtd: 0,
-        ytd: 0,
-        ytd_ly: null,
-        growth_pct: null,
-        gp: null,
-        gp_pct: null,
-        avg_invoice: null,
-        last_invoice_date: null,
-      };
+      return null;
     }
 
     let todaySum = 0;
@@ -711,10 +983,11 @@ async function fetchCustomerSalesFromInvoices(params: {
     let lastDate: string | null = null;
     const names: string[] = [];
 
+    let ytdInvoiceCount = 0;
+    let ytdInvoiceSum = 0;
+
     for (const row of rows) {
-      const amt =
-        Number(row.base_grand_total ?? row.grand_total ?? row.base_net_total ?? row.net_total) ||
-        0;
+      const amt = salesInvoiceNetAmount(row);
       const d = String(row.posting_date || "");
       if (!d) continue;
       count += 1;
@@ -723,7 +996,11 @@ async function fetchCustomerSalesFromInvoices(params: {
       if (!lastDate || d > lastDate) lastDate = d;
       if (d === todayIso) todaySum += amt;
       if (d >= monthStart && d <= todayIso) mtdSum += amt;
-      if (d >= yearStart && d <= todayIso) ytdSum += amt;
+      if (d >= yearStart && d <= todayIso) {
+        ytdSum += amt;
+        ytdInvoiceSum += amt;
+        ytdInvoiceCount += 1;
+      }
     }
 
     const gpFromItems = await fetchCustomerGpFromInvoiceItems(names, ytdSum);
@@ -736,7 +1013,12 @@ async function fetchCustomerSalesFromInvoices(params: {
       growth_pct: null,
       gp: gpFromItems?.gp ?? null,
       gp_pct: gpFromItems?.gp_pct ?? null,
-      avg_invoice: count > 0 ? periodSum / count : null,
+      avg_invoice:
+        ytdInvoiceCount > 0
+          ? ytdInvoiceSum / ytdInvoiceCount
+          : count > 0
+            ? periodSum / count
+            : null,
       last_invoice_date: lastDate,
     };
   } catch (e) {
@@ -830,10 +1112,11 @@ function applyStatementToSales(
 ): Customer360["sales"] | null {
   if (!stmt || typeof stmt !== "object") return existing || null;
 
+  // Statement API is open-outstanding scope — do not map total_invoiced → YTD sales.
   const invoiced = Number(
-    stmt.total_invoiced ?? stmt.sales_ytd ?? stmt.ytd ?? stmt.total_sales
+    stmt.sales_ytd ?? stmt.ytd ?? stmt.total_sales ?? NaN
   );
-  const mtd = Number(stmt.sales_mtd ?? stmt.mtd ?? stmt.total_invoiced_mtd);
+  const mtd = Number(stmt.sales_mtd ?? stmt.mtd ?? NaN);
   const today = Number(stmt.sales_today ?? stmt.today);
   const items = Array.isArray(stmt.items) ? stmt.items : [];
 
@@ -886,9 +1169,9 @@ function applyStatementToSales(
   if (!hasAny && !existing) return null;
 
   return {
-    today: existing?.today ?? derivedToday,
-    mtd: existing?.mtd ?? derivedMtd,
-    ytd: existing?.ytd ?? derivedYtd,
+    today: preferLiveSalesMetric(derivedToday, existing?.today),
+    mtd: preferLiveSalesMetric(derivedMtd, existing?.mtd),
+    ytd: preferLiveSalesMetric(derivedYtd, existing?.ytd),
     ytd_ly: existing?.ytd_ly ?? null,
     growth_pct: existing?.growth_pct ?? null,
     gp: existing?.gp ?? null,
@@ -959,10 +1242,11 @@ async function enrichCustomer360FromLive(
 
   if (needStmt && partyId) {
     try {
+      const { defaultStatementFromDate } = await import("./customerStatement");
       const stmt = await optimizedApis.getCustomerStatement({
         customer: partyId,
         company: params.company || next.meta.company || undefined,
-        from_date: params.from_date || `${new Date().getFullYear()}-01-01`,
+        from_date: defaultStatementFromDate(),
         to_date: params.to_date || toIsoDate(new Date()),
       });
       if (stmt && typeof stmt === "object") {
@@ -973,30 +1257,42 @@ async function enrichCustomer360FromLive(
           });
         }
 
+        const {
+          computeStatementOverdueFromItems,
+          reconcileStatementOverdue,
+        } = await import("./customerStatement");
+        const asOf = String(stmt.to_date || toIsoDate(new Date()));
         const outstanding =
           Number(
             stmt.total_outstanding ??
               stmt.outstanding ??
               stmt.customer_outstanding
           ) || null;
-        const today = toIsoDate(new Date());
-        let overdueFromItems: number | null = null;
-        if (Array.isArray(stmt.items)) {
-          overdueFromItems = stmt.items.reduce((acc: number, it: any) => {
-            const amt = Number(it.outstanding ?? it.outstanding_amount) || 0;
-            const due = String(it.due_date || "");
-            if (amt > 0 && due && due < today) return acc + amt;
-            return acc;
-          }, 0);
+        const priorOverdue = next.receivables?.overdue ?? null;
+        const overdueFromItems = computeStatementOverdueFromItems(
+          stmt.items,
+          asOf
+        );
+        const serverOverdueRaw = stmt.total_overdue ?? stmt.overdue;
+        const serverOverdue =
+          serverOverdueRaw != null &&
+          Number.isFinite(Number(serverOverdueRaw))
+            ? Number(serverOverdueRaw)
+            : null;
+        let overdue = reconcileStatementOverdue(
+          outstanding,
+          serverOverdue,
+          overdueFromItems
+        );
+        if (
+          (overdue == null || overdue === 0) &&
+          outstanding != null &&
+          outstanding > 0 &&
+          priorOverdue != null &&
+          priorOverdue > 0
+        ) {
+          overdue = Math.min(priorOverdue, outstanding);
         }
-        const overdueFromStmt =
-          Number(stmt.total_overdue ?? stmt.overdue) ||
-          (overdueFromItems != null && Number.isFinite(overdueFromItems)
-            ? overdueFromItems
-            : NaN);
-        const overdue = Number.isFinite(overdueFromStmt)
-          ? overdueFromStmt
-          : next.receivables?.overdue ?? null;
 
         let current = next.receivables?.current ?? null;
         if (
@@ -1008,12 +1304,14 @@ async function enrichCustomer360FromLive(
         }
 
         let avgMonthly = next.receivables?.avg_monthly_sales ?? null;
-        const invoiced = Number(stmt.total_invoiced);
-        if (Number.isFinite(invoiced) && invoiced > 0) {
-          const from = String(stmt.from_date || params.from_date || "");
-          const to = String(stmt.to_date || params.to_date || "");
-          const months = monthsBetweenInclusive(from, to);
-          if (months > 0) avgMonthly = invoiced / months;
+        if (!hasAuthoritativeBaSales(next.sales)) {
+          const invoiced = Number(stmt.total_invoiced);
+          if (Number.isFinite(invoiced) && invoiced > 0) {
+            const from = String(stmt.from_date || params.from_date || "");
+            const to = String(stmt.to_date || params.to_date || "");
+            const months = monthsBetweenInclusive(from, to);
+            if (months > 0) avgMonthly = invoiced / months;
+          }
         }
 
         const avgPaid =
@@ -1033,7 +1331,10 @@ async function enrichCustomer360FromLive(
               outstanding != null && Number.isFinite(outstanding)
                 ? outstanding
                 : next.receivables?.outstanding ?? null,
-            overdue,
+            overdue:
+              overdue != null && Number.isFinite(Number(overdue))
+                ? overdue
+                : next.receivables?.overdue ?? null,
             current,
             avg_monthly_sales: avgMonthly,
             avg_monthly_paid: avgPaid,
@@ -1041,8 +1342,10 @@ async function enrichCustomer360FromLive(
           };
         }
 
-        // Sales section from statement totals / line items
-        next.sales = applyStatementToSales(next.sales, stmt, params);
+        // Statement is open AR — never replace SDB/desk sales KPIs from get_customer_360
+        if (!hasAuthoritativeBaSales(next.sales)) {
+          next.sales = applyStatementToSales(next.sales, stmt, params);
+        }
 
         if (
           isGenericCustomerLabel(next.customer.name) &&
@@ -1056,7 +1359,48 @@ async function enrichCustomer360FromLive(
     }
   }
 
-  // Live SI list when Today / MTD / YTD / GP / avg are incomplete
+  // Avg invoice: BA sales block often omits it — fill without overwriting SDB mtd/ytd/gp
+  if (needsAvgInvoiceEnrichment(next.sales)) {
+    const avgFromSi = await fetchCustomerSalesFromInvoices({
+      customer: String(next.customer.id || party),
+      company: params.company || next.meta.company || undefined,
+      from_date: params.from_date || `${new Date().getFullYear()}-01-01`,
+      to_date: params.to_date || toIsoDate(new Date()),
+    });
+    if (avgFromSi?.avg_invoice != null && avgFromSi.avg_invoice > 0) {
+      next.sales = {
+        ...(next.sales || {
+          today: null,
+          mtd: null,
+          ytd: null,
+          ytd_ly: null,
+          growth_pct: null,
+          gp: null,
+          gp_pct: null,
+        }),
+        avg_invoice: avgFromSi.avg_invoice,
+        last_invoice_date:
+          avgFromSi.last_invoice_date || next.sales?.last_invoice_date || null,
+      };
+    } else if (
+      hasAuthoritativeBaSales(next.sales) &&
+      next.sales!.ytd != null &&
+      next.sales!.ytd! > 0
+    ) {
+      const derived = await fetchYtdInvoiceCountForAvg({
+        customer: String(next.customer.id || party),
+        company: params.company || next.meta.company || undefined,
+      });
+      if (derived != null && derived > 0) {
+        next.sales = {
+          ...next.sales!,
+          avg_invoice: next.sales!.ytd! / derived,
+        };
+      }
+    }
+  }
+
+  // Live SI list when Today / MTD / YTD / GP are incomplete
   if (needsSalesEnrichment(next)) {
     const fromInvoices = await fetchCustomerSalesFromInvoices({
       customer: String(next.customer.id || party),
@@ -1068,13 +1412,19 @@ async function enrichCustomer360FromLive(
       // Prefer live SI for period totals — BA often only has YTD or a partial list
       next.sales = {
         ...(next.sales || {}),
-        today: fromInvoices.today,
-        mtd: fromInvoices.mtd,
-        ytd: fromInvoices.ytd ?? next.sales?.ytd ?? null,
+        today: preferLiveSalesMetric(fromInvoices.today, next.sales?.today),
+        mtd: preferLiveSalesMetric(fromInvoices.mtd, next.sales?.mtd),
+        ytd: preferLiveSalesMetric(fromInvoices.ytd, next.sales?.ytd),
         ytd_ly: next.sales?.ytd_ly ?? null,
         growth_pct: next.sales?.growth_pct ?? null,
-        gp: next.sales?.gp ?? fromInvoices.gp ?? null,
-        gp_pct: next.sales?.gp_pct ?? fromInvoices.gp_pct ?? null,
+        gp:
+          next.sales?.gp != null && next.sales.gp !== 0
+            ? next.sales.gp
+            : fromInvoices.gp ?? next.sales?.gp ?? null,
+        gp_pct:
+          next.sales?.gp_pct != null && next.sales.gp_pct !== 0
+            ? next.sales.gp_pct
+            : fromInvoices.gp_pct ?? next.sales?.gp_pct ?? null,
         avg_invoice:
           fromInvoices.avg_invoice ?? next.sales?.avg_invoice ?? null,
         last_invoice_date:
@@ -1099,6 +1449,7 @@ async function enrichCustomer360FromLive(
   if (next.receivables?.avg_monthly_paid == null) {
     const avgPaid = await fetchAvgMonthlyPaid({
       customer: String(next.customer.id || party),
+      customer_name: next.customer.name,
       company: params.company || next.meta.company || undefined,
     });
     if (avgPaid != null) {
@@ -1115,9 +1466,54 @@ async function enrichCustomer360FromLive(
   // Pad BA charts to YTD (Jan…current) and fill gaps from live SI / PE
   next.charts = await ensureCustomerChartsYtd(next, {
     customer: String(next.customer.id || party),
+    customer_name: next.customer.name,
     company: params.company || next.meta.company || undefined,
     to_date: params.to_date,
   });
+
+  if (
+    next.receivables?.avg_monthly_paid == null &&
+    collectionSeriesHasValue(next.charts?.collection)
+  ) {
+    const nums = (next.charts!.collection || []).filter(
+      (n): n is number => typeof n === "number" && Number.isFinite(n)
+    );
+    if (nums.length) {
+      next.receivables = {
+        ...(next.receivables || {}),
+        avg_monthly_paid: nums.reduce((a, b) => a + b, 0) / nums.length,
+      };
+    }
+  }
+
+  if (!next.activity?.last_payment && next.charts?.collection) {
+    const peRows = await listCustomerPaymentEntries({
+      partyCandidates: uniquePartyCandidates(
+        String(next.customer.id || party),
+        next.customer.name
+      ),
+      company: params.company || next.meta.company || undefined,
+      from_date: `${new Date().getFullYear()}-01-01`,
+      to_date: params.to_date || toIsoDate(new Date()),
+    });
+    let lastPay: string | null = null;
+    for (const row of peRows) {
+      const d = String(row.posting_date || "");
+      if (d && (!lastPay || d > lastPay)) lastPay = d;
+    }
+    if (lastPay) {
+      next.activity = {
+        ...(next.activity || {
+          last_quotation: null,
+          last_sales_order: null,
+          last_delivery: null,
+          last_invoice: null,
+          last_payment: null,
+        }),
+        last_payment: lastPay,
+      };
+    }
+  }
 
   // MTD backup from current-month chart bar when SI list was unavailable
   if (next.sales && next.sales.mtd == null && next.charts?.sales?.length) {
@@ -1128,17 +1524,25 @@ async function enrichCustomer360FromLive(
     }
   }
 
-  // Derive AR KPIs from sales / charts without inventing values
-  if (next.receivables || next.sales || next.charts) {
+  // Avg monthly sales = YTD net ÷ months (BA often sends avg_invoice here by mistake)
+  const avgMonthlyFromYtd = computeCustomerAvgMonthlySales(
+    next.sales?.ytd,
+    params.to_date || toIsoDate(new Date())
+  );
+  if (avgMonthlyFromYtd != null) {
     next.receivables = { ...(next.receivables || {}) };
-    if (
-      next.receivables.avg_monthly_sales == null &&
-      next.sales?.ytd != null &&
-      next.sales.ytd > 0
-    ) {
-      next.receivables.avg_monthly_sales =
-        next.sales.ytd / (new Date().getMonth() + 1);
+    const prev = next.receivables.avg_monthly_sales;
+    next.receivables.avg_monthly_sales = avgMonthlyFromYtd;
+    if (__DEV__ && prev != null && Math.abs(prev - avgMonthlyFromYtd) > 1) {
+      console.log("📊 Customer avg monthly sales from YTD:", {
+        was: prev,
+        now: avgMonthlyFromYtd,
+        ytd: next.sales?.ytd,
+        avgInvoice: next.sales?.avg_invoice,
+      });
     }
+  } else if (next.receivables || next.sales || next.charts) {
+    next.receivables = { ...(next.receivables || {}) };
     if (
       next.receivables.avg_monthly_sales == null &&
       Array.isArray(next.charts?.sales) &&
@@ -1152,6 +1556,10 @@ async function enrichCustomer360FromLive(
           nums.reduce((a, b) => a + b, 0) / nums.length;
       }
     }
+  }
+
+  if (next.receivables || next.sales || next.charts) {
+    next.receivables = { ...(next.receivables || {}) };
     if (
       next.receivables.avg_monthly_paid == null &&
       Array.isArray(next.charts?.collection) &&
@@ -1166,6 +1574,8 @@ async function enrichCustomer360FromLive(
       }
     }
   }
+
+  await reconcileSuspiciousSalesGp(next, params, party);
 
   return next;
 }
@@ -1221,12 +1631,16 @@ export async function searchCustomers(
     } catch (error) {
       if (isMissingBaMethodError(error)) {
         markBaMethodMissing("search_customers");
-      } else if (isBaPermissionDeniedError(error)) {
-        // Ozdah / multi-client: BA Access Profile may deny search_customers
-        // while standard Customer read still works — fall through to Frappe.
+      } else if (
+        isBaPermissionDeniedError(error) ||
+        isTransientGatewayError(error)
+      ) {
         const ax = error as { response?: { data?: unknown; status?: number } };
+        const status = ax?.response?.status;
         console.warn(
-          "⚠️ BA search_customers denied (403) — falling back to Frappe Customer search",
+          status === 403
+            ? "⚠️ BA search_customers denied (403) — falling back to Frappe Customer search"
+            : `⚠️ BA search_customers unavailable (HTTP ${status ?? "?"}) — falling back to Frappe Customer search`,
           ax?.response?.data || (error as Error)?.message
         );
       } else {
@@ -1269,6 +1683,7 @@ export async function fetchCustomer360(params: {
       filterBaParams(
         {
           customer: party,
+          customer_name: party,
           company,
           from_date: params.from_date,
           to_date: params.to_date,
@@ -1309,6 +1724,8 @@ export async function fetchCustomer360(params: {
         salesToday: normalized.sales?.today,
         salesMtd: normalized.sales?.mtd,
         salesYtd: normalized.sales?.ytd,
+        salesGp: normalized.sales?.gp,
+        salesGpPct: normalized.sales?.gp_pct,
         outstanding: normalized.receivables?.outstanding,
         overdue: normalized.receivables?.overdue,
         current: normalized.receivables?.current,
@@ -1328,6 +1745,8 @@ export async function fetchCustomer360(params: {
         salesToday: enriched.sales?.today,
         salesMtd: enriched.sales?.mtd,
         salesYtd: enriched.sales?.ytd,
+        salesGp: enriched.sales?.gp,
+        salesGpPct: enriched.sales?.gp_pct,
         avgInvoice: enriched.sales?.avg_invoice,
       });
     }

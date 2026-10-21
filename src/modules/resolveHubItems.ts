@@ -7,6 +7,7 @@ import { PHASE2_FEATURES } from "../api/endpoints";
 import { isModuleEnabled, type MobileConfig } from "../api/mobileConfig";
 import {
   canAccessHubFeature,
+  hasVatDashboardAccess,
   type MenuPermissionStateLike,
 } from "../api/menuAccess";
 import type { MobileBootstrap, MobileModuleConfig } from "../types/bootstrap";
@@ -103,6 +104,13 @@ const CONFIG_FLAG_BOARDS: {
     section: "insights",
     hubFeatureId: "dashboard",
   },
+  {
+    flag: "vat",
+    boardKey: "vat_overview",
+    label: "VAT Report",
+    section: "finance",
+    hubFeatureId: "vat",
+  },
 ];
 
 function sectionForBoardKey(key: string): string {
@@ -110,13 +118,14 @@ function sectionForBoardKey(key: string): string {
   if (k.startsWith("sales")) return "sales";
   if (k.startsWith("receivable") || k.startsWith("collection")) return "finance";
   if (k.startsWith("inventory") || k.startsWith("purchase")) return "operations";
-  if (k.startsWith("payable")) return "finance";
+  if (k.startsWith("payable") || k.startsWith("vat")) return "finance";
   return SECTION_FALLBACK;
 }
 
 function moduleKeysPresent(bootstrap: MobileBootstrap): Set<string> {
   const keys = new Set<string>();
   for (const m of bootstrap.modules) {
+    if (m.enabled === false) continue;
     keys.add(String(m.key || "").toLowerCase());
     keys.add(String(m.route_key || m.key || "").toLowerCase());
   }
@@ -174,7 +183,16 @@ export function augmentBootstrapModulesForHub(
   }
 
   for (const spec of CONFIG_FLAG_BOARDS) {
-    if (!isModuleEnabled(mobileConfig, spec.flag as keyof import("../api/mobileConfig").MobileModules)) continue;
+    const moduleOn = isModuleEnabled(
+      mobileConfig,
+      spec.flag as keyof import("../api/mobileConfig").MobileModules
+    );
+    if (spec.flag === "vat") {
+      if (!moduleOn && !hasVatDashboardAccess(permissions)) continue;
+      if (!hasVatDashboardAccess(permissions)) continue;
+    } else if (!moduleOn) {
+      continue;
+    }
     if (hasKey(spec.boardKey) || hasKey(spec.flag)) continue;
     pushBoard(
       {
@@ -319,12 +337,12 @@ function pushBuiltIn(
 
   if (entry.phase2 === "catalogue" && !PHASE2_FEATURES.catalogue) return;
 
-  if (
-    entry.configModule &&
-    !isModuleEnabled(opts.mobileConfig, entry.configModule as any)
-  ) {
-    return;
-  }
+  const configModule = entry.configModule;
+  const moduleGateOk =
+    !configModule ||
+    isModuleEnabled(opts.mobileConfig, configModule as any) ||
+    (configModule === "vat" && hasVatDashboardAccess(opts.permissions));
+  if (!moduleGateOk) return;
 
   if (!canAccessHubFeature(opts.permissions, entry.hubFeatureId)) {
     return;
@@ -521,12 +539,12 @@ function resolveLegacyHubItems(opts: {
     if (key === "product") continue;
     if (key === "executive") continue;
     if (entry.phase2 === "catalogue" && !PHASE2_FEATURES.catalogue) continue;
-    if (
-      entry.configModule &&
-      !isModuleEnabled(opts.mobileConfig, entry.configModule as any)
-    ) {
-      continue;
-    }
+    const configModule = entry.configModule;
+    const moduleGateOk =
+      !configModule ||
+      isModuleEnabled(opts.mobileConfig, configModule as any) ||
+      (configModule === "vat" && hasVatDashboardAccess(opts.permissions));
+    if (!moduleGateOk) continue;
     if (!canAccessHubFeature(opts.permissions, entry.hubFeatureId)) continue;
 
     items.push({
@@ -583,7 +601,17 @@ export function resolveVisibleHubItems(opts: {
           showUpdateRequired,
         });
 
-  return dedupeHubItems(raw);
+  const deduped = dedupeHubItems(raw);
+  return deduped.filter((item) => {
+    const k = String(item.key || "").toLowerCase();
+    if (k === "vat" || k === "vat_overview" || k.startsWith("vat_")) {
+      return (
+        hasVatDashboardAccess(permissions) &&
+        canAccessHubFeature(permissions, "vat")
+      );
+    }
+    return true;
+  });
 }
 
 /**
@@ -764,6 +792,16 @@ function familyMetaForKey(key: string): FamilyMeta {
       order: 50,
     };
   }
+  if (k.startsWith("vat")) {
+    return {
+      id: "vat",
+      title: "VAT",
+      subtitle: "Output, input & not submitted",
+      icon: "receipt-outline",
+      color: "#0d9488",
+      order: 45,
+    };
+  }
   if (k.startsWith("purchase")) {
     return {
       id: "purchase",
@@ -836,6 +874,7 @@ export function shortHubChipLabel(item: ResolvedHubItem): string {
   if (/inventory/.test(k)) return "Stock";
   if (/payable/.test(k)) return "AP";
   if (/purchase/.test(k)) return "Purchase";
+  if (/vat/.test(k)) return "VAT";
   const words = String(item.title || "")
     .trim()
     .split(/\s+/);

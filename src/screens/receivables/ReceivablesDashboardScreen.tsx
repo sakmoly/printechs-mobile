@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
 } from "react-native";
 import { useBootstrapStore } from "../../store/bootstrap";
 import { useDashboardScope } from "../../hooks/useDashboardScope";
@@ -16,6 +15,8 @@ import type {
   ReceivablesFilterBarHandle,
 } from "../../components/receivables/ReceivablesFilterBar";
 import { KpiRowGrid } from "../../components/receivables/KpiRowGrid";
+import { ReceivablesTerritoryBarChart } from "../../components/receivables/ReceivablesTerritoryBarChart";
+import { partitionReceivablesTerritoryKpis } from "../../utils/receivablesTerritoryBreakdown";
 import {
   ReceivablesWidgetBlock,
   ReceivablesTrendChart,
@@ -31,12 +32,16 @@ import {
 import { useReceivablesBoardWidgets } from "./useReceivablesBoardWidgets";
 import { useDashboardFreshness } from "../../hooks/useDashboardFreshness";
 import { DashboardFreshnessFooter } from "../../components/dashboard/DashboardFreshnessFooter";
+import { DashboardRefreshBanner } from "../../components/dashboard/DashboardRefreshBanner";
+import { DashboardRefreshControl } from "../../components/dashboard/DashboardRefreshControl";
+import { useDashboardPullRefresh } from "../../hooks/useDashboardPullRefresh";
 import { resolvePeriod, type PeriodPreset } from "../../utils/period";
 import { RECEIVABLES, formatDateRangeLabel } from "./receivablesTheme";
 import { Fonts } from "../../theme/typography";
 import { useAuthStore } from "../../store/auth";
 import { DashboardLoadingPanel } from "../../components/dashboard/DashboardLoadingPanel";
 import { resolveDashboardLoadState } from "../../utils/dashboardLoadState";
+import { ALL_TERRITORIES } from "../../utils/dashboardTerritory";
 
 type Props = {
   title?: string;
@@ -58,7 +63,6 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
   } = useDashboardScope();
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("ytd");
   const [compareMode, setCompareMode] = useState<CompareMode>("ly");
-  const [refreshing, setRefreshing] = useState(false);
   const filterBarRef = useRef<ReceivablesFilterBarHandle>(null);
 
   const period = useMemo(
@@ -98,6 +102,25 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
     return partitionReceivablesLayout(sections);
   }, [widgetDefs, widgetMap]);
 
+  const permissionsScope = useAuthStore((s) => s.permissions.scope);
+
+  const overviewSplit = useMemo(
+    () =>
+      partitionReceivablesTerritoryKpis(
+        layout.overviewKpis,
+        permissionsScope
+      ),
+    [layout.overviewKpis, permissionsScope]
+  );
+
+  const showTerritoryReceivablesBar =
+    overviewSplit.territoryPoints.length >= 2 &&
+    (!selectedTerritory || selectedTerritory === ALL_TERRITORIES);
+
+  const overviewKpiGridItems = showTerritoryReceivablesBar
+    ? overviewSplit.otherKpis
+    : layout.overviewKpis;
+
   const mod = bootstrap?.modules?.find(
     (m) => m.key === "receivables" || m.route_key === "receivables"
   );
@@ -115,14 +138,7 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
     period.to_date
   );
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await refreshBoard();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshBoard]);
+  const { refreshing, onRefresh } = useDashboardPullRefresh(refreshBoard);
 
   const hasContent =
     layout.overviewKpis.length > 0 ||
@@ -168,13 +184,17 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
         />
       </View>
 
+      {refreshing ? (
+        <DashboardRefreshBanner tintColor={RECEIVABLES.link} />
+      ) : null}
+
       <ScrollView
         contentContainerStyle={styles.body}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
+          <DashboardRefreshControl
+            refreshing={refreshing || isFetching}
             onRefresh={onRefresh}
             tintColor={RECEIVABLES.link}
           />
@@ -195,11 +215,23 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
           </View>
         ) : null}
 
-        {!loadState.showLoading && layout.overviewKpis.length > 0 ? (
+        {!loadState.showLoading && overviewKpiGridItems.length > 0 ? (
           <KpiRowGrid
-            items={layout.overviewKpis}
+            items={overviewKpiGridItems}
             variant="overview"
             showLy={showLy}
+            listScope={listScope}
+          />
+        ) : null}
+
+        {!loadState.showLoading && showTerritoryReceivablesBar ? (
+          <ReceivablesTerritoryBarChart
+            points={overviewSplit.territoryPoints}
+            currency={
+              layout.overviewKpis[0]?.payload.currency ||
+              layout.overviewKpis[0]?.payload.meta?.currency ||
+              "SAR"
+            }
             listScope={listScope}
           />
         ) : null}
@@ -269,10 +301,12 @@ export function ReceivablesDashboardScreen({ title, subtitle }: Props) {
           />
         ))}
 
-        {!loadState.showLoading && freshness.label ? (
+        {!loadState.showLoading && (refreshing || freshness.label) ? (
           <DashboardFreshnessFooter
-            label={freshness.label}
-            isFetching={freshness.isFetching}
+            label={
+              refreshing ? "Refreshing dashboard…" : (freshness.label ?? "")
+            }
+            isFetching={refreshing || freshness.isFetching}
             tintColor={RECEIVABLES.link}
             subtitleColor={RECEIVABLES.subtitle}
           />

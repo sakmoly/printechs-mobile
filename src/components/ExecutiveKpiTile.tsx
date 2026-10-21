@@ -19,6 +19,9 @@ type Props = {
   onPress?: () => void;
   compact?: boolean;
   valueColor?: string;
+  /** Currency display (default compact K/M). */
+  currencyCompact?: boolean;
+  currencyDecimals?: number;
 };
 
 export function ExecutiveKpiTile({
@@ -32,6 +35,8 @@ export function ExecutiveKpiTile({
   onPress,
   compact,
   valueColor,
+  currencyCompact = true,
+  currencyDecimals,
 }: Props) {
   const dir = changeDirection(changePct);
   const display =
@@ -43,7 +48,10 @@ export function ExecutiveKpiTile({
         ? value == null
           ? "—"
           : Number(value).toLocaleString("en-US")
-        : formatCurrency(value, currency, { compact: true });
+        : formatCurrency(value, currency, {
+            compact: currencyCompact,
+            decimals: currencyDecimals,
+          });
 
   const body = (
     <View style={[styles.card, compact && styles.cardCompact]}>

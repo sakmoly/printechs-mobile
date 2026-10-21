@@ -28,7 +28,12 @@ import {
 } from "../../src/components/SafeScreen";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { presentWhatsAppShare } from "../../src/utils/whatsappShare";
+import {
+  shareCustomerStatementPdf,
+  statementPdfShareHint,
+} from "../../src/utils/statementPdfShare";
+import { resolveCompanyName } from "../../src/api/apiResilience";
+import { useAuthStore } from "../../src/store/auth";
 
 // Configure notification behavior with custom sound
 Notifications.setNotificationHandler({
@@ -123,6 +128,8 @@ export default function ApprovalsScreen() {
   const [rejectReason, setRejectReason] = useState("");
   const [showCreditModal, setShowCreditModal] = useState(false);
   const [creditData, setCreditData] = useState<any>(null);
+  const [sharingStatementPdf, setSharingStatementPdf] = useState(false);
+  const scopeCompany = useAuthStore((s) => s.permissions.scope?.company);
 
   // Animation for cards
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -199,20 +206,29 @@ export default function ApprovalsScreen() {
     setShowCreditModal(true);
   };
 
-  const handleSendStatement = (item: any) => {
-    const message = `Dear ${
-      item.customer_name
-    },\n\nPlease find attached your account statement.\n\nOutstanding Amount: ${item.customer_outstanding?.toLocaleString()} SAR\nOverdue Amount: ${item.customer_overdue?.toLocaleString()} SAR\n\nThank you for your prompt attention.\n\nBest regards,\nPrintechs`;
-
-    presentWhatsAppShare({
-      message,
-      customerPhone:
-        item.mobile_no ||
-        item.customer_mobile ||
-        item.mobile ||
-        item.phone,
-      customerName: item.customer_name,
-    });
+  const handleShareStatementPdf = async (item: any) => {
+    const customerId =
+      item.customer || item.customer_id || item.customer_name;
+    if (!customerId) {
+      Alert.alert("Statement PDF", "Customer ID is missing for this approval.");
+      return;
+    }
+    const company = resolveCompanyName(scopeCompany);
+    setSharingStatementPdf(true);
+    try {
+      await shareCustomerStatementPdf({
+        customer: String(customerId),
+        company,
+        customerName: item.customer_name,
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Statement PDF",
+        error?.message || "Failed to download or share the statement PDF."
+      );
+    } finally {
+      setSharingStatementPdf(false);
+    }
   };
 
   const handleSendStatementByEmail = async (item: any) => {
@@ -225,7 +241,9 @@ export default function ApprovalsScreen() {
       );
 
       // Call the API to send email
-      await optimizedApis.sendStatementByEmail(item.customer);
+      await optimizedApis.sendStatementByEmail(
+        item.customer || item.customer_id || item.customer_name
+      );
 
       // Success message
       Alert.alert(
@@ -897,18 +915,31 @@ export default function ApprovalsScreen() {
                 creditData?.customer_overdue > 0 && (
                   <>
                     <TouchableOpacity
-                      style={styles.whatsappButton}
-                      onPress={() => handleSendStatement(creditData)}
+                      style={[
+                        styles.whatsappButton,
+                        sharingStatementPdf && styles.buttonDisabled,
+                      ]}
+                      disabled={sharingStatementPdf}
+                      onPress={() => void handleShareStatementPdf(creditData)}
                     >
-                      <Ionicons
-                        name="logo-whatsapp"
-                        size={24}
-                        color="#ffffff"
-                      />
+                      {sharingStatementPdf ? (
+                        <ActivityIndicator color="#ffffff" />
+                      ) : (
+                        <Ionicons
+                          name="logo-whatsapp"
+                          size={24}
+                          color="#ffffff"
+                        />
+                      )}
                       <Text style={styles.whatsappButtonText}>
-                        Send via WhatsApp
+                        {sharingStatementPdf
+                          ? "Preparing PDF…"
+                          : "Share PDF (WhatsApp)"}
                       </Text>
                     </TouchableOpacity>
+                    {!sharingStatementPdf ? (
+                      <Text style={styles.sharePdfHint}>{statementPdfShareHint}</Text>
+                    ) : null}
 
                     <TouchableOpacity
                       style={styles.emailButton}
@@ -1703,6 +1734,17 @@ const styles = StyleSheet.create({
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "700",
+  },
+  sharePdfHint: {
+    color: "#6b7280",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: -4,
+    marginBottom: 4,
+    paddingHorizontal: 8,
+  },
+  buttonDisabled: {
+    opacity: 0.75,
   },
   emailButton: {
     backgroundColor: "#3b82f6",

@@ -133,6 +133,7 @@ export default function SettingsScreen() {
             <Ionicons name="settings-outline" size={20} color="#667eea" />
             <Text style={styles.editButtonText}>Configure Server</Text>
           </TouchableOpacity>
+
         </View>
       ) : (
         <View>

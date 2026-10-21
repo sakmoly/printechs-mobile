@@ -718,6 +718,13 @@ export type MobileBootstrap = {
 };
 
 /** Option A — Desk-driven modules (schema v2 / capability / report_list payload). */
+/** Server rebuild of tabSalesDashBoard (erp_analysis.api.refresh_sales_dashboard*). */
+export function canRefreshSalesDashboard(
+  bootstrap: MobileBootstrap | null | undefined
+): boolean {
+  return bootstrap?.capabilities?.can_refresh_sales_dashboard === true;
+}
+
 export function supportsDynamicModules(
   bootstrap: MobileBootstrap | null | undefined
 ): boolean {

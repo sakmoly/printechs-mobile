@@ -4,7 +4,6 @@
     "slug": "erpnext-mobile",
     "version": "2.2.0",
     "orientation": "portrait",
-    "newArchEnabled": true,
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "description": "Enterprise Resource Planning mobile app for managing sales, inventory, receivables, and approvals on the go.",
@@ -71,7 +70,10 @@
           "color": "#ffffff"
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-status-bar",
+      "expo-sharing",
+      "expo-asset"
     ],
     "notification": {
       "color": "#ffffff"

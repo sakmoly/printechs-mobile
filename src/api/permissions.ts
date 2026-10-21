@@ -1,9 +1,12 @@
 import { http } from "./http";
 import { ERP_ANALYSIS } from "./endpoints";
-import { filterBaParams } from "./apiResilience";
 import { normalizeAccessScope } from "./accessScope";
 import type { MobileConfig } from "./mobileConfig";
 import { logger } from "../utils/logger";
+import {
+  extractFrappeErrorMessage,
+  isMissingBaMethodError,
+} from "./baErrors";
 
 export interface AccessObjectPermission {
   object_key: string;
@@ -47,26 +50,71 @@ export interface GetMyAccessResponse {
   profiles: AccessObjectPermission[];
 }
 
+/** Scope params for get_my_access — never strip territory/branch (not sales filters). */
+function accessScopeRequestBody(
+  scope?: Partial<AccessPermissionScope>
+): Record<string, unknown> {
+  const raw = {
+    ...scope,
+    territory: scope?.territory ?? undefined,
+  } as Record<string, unknown>;
+  const allow = new Set([
+    "company",
+    "user",
+    "territory",
+    "branch",
+    "territories",
+    "view_territories",
+    "approve_territories",
+  ]);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (!allow.has(key)) continue;
+    if (value === undefined || value === null || value === "") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+type MyAccessHttpResponse = {
+  message?: GetMyAccessResponse & Record<string, unknown>;
+  profiles?: AccessObjectPermission[];
+  scope?: AccessPermissionScope;
+  access_profile?: Record<string, unknown>;
+  allow_view_all_sales?: unknown;
+};
+
+async function callGetMyAccess(
+  body: Record<string, unknown>
+): Promise<MyAccessHttpResponse> {
+  const silent = { silentError: true as const };
+  try {
+    return await http.post<MyAccessHttpResponse>(
+      ERP_ANALYSIS.api.getMyAccess,
+      body,
+      silent
+    );
+  } catch (postErr) {
+    try {
+      return await http.get<MyAccessHttpResponse>(
+        ERP_ANALYSIS.api.getMyAccess,
+        body,
+        silent
+      );
+    } catch {
+      throw postErr;
+    }
+  }
+}
+
 export async function getMyAccess(
   scope?: Partial<AccessPermissionScope>,
-  config?: MobileConfig | null
+  _config?: MobileConfig | null
 ): Promise<GetMyAccessResponse> {
-  const sanitizedScope = filterBaParams(
-    {
-      ...scope,
-      territory: scope?.territory ?? undefined,
-    } as Record<string, unknown>,
-    config
-  );
+  const sanitizedScope = accessScopeRequestBody(scope);
 
   try {
-    const response = await http.post<{
-      message?: GetMyAccessResponse & Record<string, unknown>;
-      profiles?: AccessObjectPermission[];
-      scope?: AccessPermissionScope;
-      access_profile?: Record<string, unknown>;
-      allow_view_all_sales?: unknown;
-    }>(ERP_ANALYSIS.api.getMyAccess, sanitizedScope);
+    const response = await callGetMyAccess(sanitizedScope);
 
     const payload =
       response.message ?? {
@@ -117,12 +165,30 @@ export async function getMyAccess(
   } catch (error) {
     const status = (error as { response?: { status?: number } })?.response
       ?.status;
-    if (status === 502 || status === 503 || status === 504) {
+    const detail =
+      extractFrappeErrorMessage(error) ||
+      (error as Error)?.message ||
+      "unknown error";
+    if (isMissingBaMethodError(error)) {
       logger.warn(
-        `get_my_access unavailable (HTTP ${status}) — nginx/upstream; using default scope`
+        "get_my_access not installed on this server — menus use defaults",
+        { status, detail }
+      );
+    } else if (status === 403) {
+      logger.warn(
+        "get_my_access denied (Access Profile) — using default scope",
+        { detail }
+      );
+    } else if (status === 502 || status === 503 || status === 504) {
+      logger.warn(
+        `get_my_access unavailable (HTTP ${status}) — nginx/upstream; using default scope`,
+        { detail }
       );
     } else {
-      logger.error("get_my_access failed:", error);
+      logger.error("get_my_access failed — using default scope", {
+        status,
+        detail,
+      });
     }
     return {
       profiles: [],

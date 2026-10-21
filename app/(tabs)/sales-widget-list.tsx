@@ -152,11 +152,13 @@ export default function SalesWidgetListScreen() {
   return (
     <SafeScreen aboveTabBar includeTop={false} style={styles.container}>
       <View style={[styles.header, { paddingTop: topInset }]}>
-        <ScreenHeaderNav />
+        <ScreenHeaderNav
+          color={SALES.title}
+          buttonBackground="#f1f5f9"
+        />
         <Text style={styles.headerTitle} numberOfLines={2}>
           {title}
         </Text>
-        <View style={styles.headerSpacer} />
       </View>
 
       {loading && !payload ? (
@@ -223,9 +225,10 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: Fonts.bodyBold,
     color: SALES.title,
-    textAlign: "center",
+    textAlign: "left",
+    marginLeft: 4,
+    paddingRight: 8,
   },
-  headerSpacer: { width: 40 },
   listWrap: {
     flex: 1,
   },

@@ -17,9 +17,20 @@ type Props = {
   title: string;
   subtitle?: string;
   onFilterPress?: () => void;
+  /** Server tabSalesDashBoard rebuild (management capability). */
+  showServerRefresh?: boolean;
+  onServerRefreshPress?: () => void;
+  serverRefreshBusy?: boolean;
 };
 
-export function SalesAppBar({ title, subtitle, onFilterPress }: Props) {
+export function SalesAppBar({
+  title,
+  subtitle,
+  onFilterPress,
+  showServerRefresh,
+  onServerRefreshPress,
+  serverRefreshBusy,
+}: Props) {
   const insets = useSafeAreaInsets();
 
   return (
@@ -51,19 +62,27 @@ export function SalesAppBar({ title, subtitle, onFilterPress }: Props) {
           ) : null}
         </View>
         <View style={styles.actions}>
+          {showServerRefresh ? (
+            <TouchableOpacity
+              style={styles.iconBtn}
+              activeOpacity={0.85}
+              onPress={onServerRefreshPress}
+              disabled={serverRefreshBusy}
+              accessibilityLabel="Refresh sales data on server"
+            >
+              <Ionicons
+                name={serverRefreshBusy ? "hourglass-outline" : "cloud-upload-outline"}
+                size={20}
+                color={SALES.title}
+              />
+            </TouchableOpacity>
+          ) : null}
           <TouchableOpacity
             style={styles.iconBtn}
             activeOpacity={0.85}
             onPress={onFilterPress}
           >
             <Ionicons name="funnel-outline" size={20} color={SALES.title} />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} activeOpacity={0.85}>
-            <Ionicons
-              name="ellipsis-vertical"
-              size={20}
-              color={SALES.title}
-            />
           </TouchableOpacity>
         </View>
       </View>

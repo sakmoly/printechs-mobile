@@ -290,7 +290,12 @@ export class HttpClient {
           (status === 417 && url.includes("store_push_token")) ||
           isMissingMethod417;
 
-        if (!isExpected403 && !isSoft417 && !silent) {
+        const isTimeoutError =
+          error.code === "ECONNABORTED" ||
+          error.code === "ETIMEDOUT" ||
+          error.message?.toLowerCase().includes("timeout");
+
+        if (!isExpected403 && !isSoft417 && !silent && !isTimeoutError) {
           const fullUrl = this.resolveFullUrl(
             url,
             error.config?.baseURL || this.client.defaults.baseURL
@@ -411,7 +416,7 @@ export class HttpClient {
             error.message?.toLowerCase().includes("timeout");
           if (isTimeout) {
             if (!silent) {
-              logger.error("🌐 Request timed out:", fullUrl);
+              logger.warn("⏱ Request timed out:", fullUrl);
             }
             return Promise.reject(
               new Error(
@@ -478,8 +483,15 @@ export class HttpClient {
         );
         const ax = error as AxiosError;
         const networkNoResponse = !ax.response && isNetworkOrTlsError(error);
-        if (!softMissing && !silent && !networkNoResponse) {
+        const isTimeout =
+          ax.code === "ECONNABORTED" ||
+          String(ax.message || "")
+            .toLowerCase()
+            .includes("timeout");
+        if (!softMissing && !silent && !networkNoResponse && !isTimeout) {
           logger.error("❌ GET request failed:", url, error);
+        } else if (isTimeout && !silent) {
+          logger.warn("⏱ GET timed out:", url);
         }
       } catch {}
       throw error;

@@ -9,7 +9,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
 } from "react-native";
 import { useBootstrapStore } from "../../store/bootstrap";
 import { useDashboardScope } from "../../hooks/useDashboardScope";
@@ -33,6 +32,9 @@ import { buildHomeLayout } from "./buildHomeSections";
 import { useHomeBoardWidgets } from "./useHomeBoardWidgets";
 import { useDashboardFreshness } from "../../hooks/useDashboardFreshness";
 import { DashboardFreshnessFooter } from "../../components/dashboard/DashboardFreshnessFooter";
+import { DashboardRefreshBanner } from "../../components/dashboard/DashboardRefreshBanner";
+import { DashboardRefreshControl } from "../../components/dashboard/DashboardRefreshControl";
+import { useDashboardPullRefresh } from "../../hooks/useDashboardPullRefresh";
 import { resolvePeriod, type PeriodPreset } from "../../utils/period";
 import { HOME } from "./homeTheme";
 import { Fonts } from "../../theme/typography";
@@ -69,7 +71,6 @@ export function HomeDashboardScreen({
   } = useDashboardScope();
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("ytd");
   const [compareMode, setCompareMode] = useState<CompareMode>("ly");
-  const [refreshing, setRefreshing] = useState(false);
   const filterBarRef = useRef<HomeFilterBarHandle>(null);
 
   const period = useMemo(() => resolvePeriod(periodPreset), [periodPreset]);
@@ -116,17 +117,14 @@ export function HomeDashboardScreen({
     "Home Dashboard";
   const screenSubtitle = subtitle || `${companyShort} • ${businessType}`;
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await Promise.all([
-        refreshBoard(),
-        onRefreshExtra?.() ?? Promise.resolve(),
-      ]);
-    } finally {
-      setRefreshing(false);
-    }
+  const pullRefresh = useCallback(async () => {
+    await Promise.all([
+      refreshBoard(),
+      onRefreshExtra?.() ?? Promise.resolve(),
+    ]);
   }, [refreshBoard, onRefreshExtra]);
+
+  const { refreshing, onRefresh } = useDashboardPullRefresh(pullRefresh);
 
   const hasContent =
     layout.businessKpis.length > 0 ||
@@ -174,13 +172,17 @@ export function HomeDashboardScreen({
         />
       </View>
 
+      {refreshing ? (
+        <DashboardRefreshBanner tintColor={HOME.link} />
+      ) : null}
+
       <ScrollView
         contentContainerStyle={styles.body}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
+          <DashboardRefreshControl
+            refreshing={refreshing || isFetching}
             onRefresh={onRefresh}
             tintColor={HOME.link}
           />
@@ -236,10 +238,12 @@ export function HomeDashboardScreen({
           <HomeRecentActivities entry={layout.recentActivities} />
         ) : null}
 
-        {!loadState.showLoading && freshness.label ? (
+        {!loadState.showLoading && (refreshing || freshness.label) ? (
           <DashboardFreshnessFooter
-            label={freshness.label}
-            isFetching={freshness.isFetching}
+            label={
+              refreshing ? "Refreshing dashboard…" : (freshness.label ?? "")
+            }
+            isFetching={refreshing || freshness.isFetching}
             tintColor={HOME.link}
             subtitleColor={HOME.subtitle}
           />

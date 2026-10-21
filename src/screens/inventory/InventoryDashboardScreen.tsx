@@ -10,7 +10,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  RefreshControl,
 } from "react-native";
 import { useBootstrapStore } from "../../store/bootstrap";
 import { useDashboardScope } from "../../hooks/useDashboardScope";
@@ -36,6 +35,9 @@ import { filterOverviewKpisForTerritoryScope } from "./inventoryTerritoryScope";
 import { useInventoryBoardWidgets } from "./useInventoryBoardWidgets";
 import { useDashboardFreshness } from "../../hooks/useDashboardFreshness";
 import { DashboardFreshnessFooter } from "../../components/dashboard/DashboardFreshnessFooter";
+import { DashboardRefreshBanner } from "../../components/dashboard/DashboardRefreshBanner";
+import { DashboardRefreshControl } from "../../components/dashboard/DashboardRefreshControl";
+import { useDashboardPullRefresh } from "../../hooks/useDashboardPullRefresh";
 import { resolvePeriod, type PeriodPreset } from "../../utils/period";
 import { INVENTORY } from "./inventoryTheme";
 import { Fonts } from "../../theme/typography";
@@ -64,7 +66,6 @@ export function InventoryDashboardScreen({ title, subtitle }: Props) {
   } = useDashboardScope();
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("ytd");
   const [compareMode, setCompareMode] = useState<CompareMode>("ly");
-  const [refreshing, setRefreshing] = useState(false);
   const filterBarRef = useRef<InventoryFilterBarHandle>(null);
 
   const period = useMemo(() => resolvePeriod(periodPreset), [periodPreset]);
@@ -131,14 +132,7 @@ export function InventoryDashboardScreen({ title, subtitle }: Props) {
   const screenSubtitle =
     subtitle || `${companyShort} • ${businessType}`;
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      await refreshBoard();
-    } finally {
-      setRefreshing(false);
-    }
-  }, [refreshBoard]);
+  const { refreshing, onRefresh } = useDashboardPullRefresh(refreshBoard);
 
   const brandExplorerScope = useMemo(
     () => ({
@@ -206,13 +200,17 @@ export function InventoryDashboardScreen({ title, subtitle }: Props) {
         />
       </View>
 
+      {refreshing ? (
+        <DashboardRefreshBanner tintColor={INVENTORY.link} />
+      ) : null}
+
       <ScrollView
         contentContainerStyle={styles.body}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
+          <DashboardRefreshControl
+            refreshing={refreshing || isFetching}
             onRefresh={onRefresh}
             tintColor={INVENTORY.link}
           />
@@ -307,7 +305,7 @@ export function InventoryDashboardScreen({ title, subtitle }: Props) {
         {!loadState.showLoading && freshness.label ? (
           <DashboardFreshnessFooter
             label={freshness.label}
-            isFetching={freshness.isFetching}
+            isFetching={refreshing || freshness.isFetching}
             tintColor={INVENTORY.link}
             subtitleColor={INVENTORY.subtitle}
           />

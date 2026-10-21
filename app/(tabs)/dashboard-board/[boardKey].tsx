@@ -33,6 +33,7 @@ import { ScreenHeaderNav } from "../../../src/components/ScreenHeaderNav";
 import { ReceivablesDashboardScreen } from "../../../src/screens/receivables/ReceivablesDashboardScreen";
 import { SalesDashboardScreen } from "../../../src/screens/sales/SalesDashboardScreen";
 import { InventoryDashboardScreen } from "../../../src/screens/inventory/InventoryDashboardScreen";
+import { VatDashboardScreen } from "../../../src/screens/vat/VatDashboardScreen";
 
 function normalizeBoardKey(boardKey: string): string {
   return String(boardKey || "")
@@ -54,6 +55,16 @@ function isSalesOverviewBoard(boardKey: string): boolean {
 function isInventoryOverviewBoard(boardKey: string): boolean {
   const k = normalizeBoardKey(boardKey);
   return k === "inventory_overview" || k === "inventory";
+}
+
+function isVatOverviewBoard(boardKey: string): boolean {
+  const k = normalizeBoardKey(boardKey);
+  return (
+    k === "vat_overview" ||
+    k === "vat" ||
+    k === "vat_dashboard" ||
+    k === "vat_report"
+  );
 }
 
 export default function DashboardBoardScreen() {
@@ -98,6 +109,10 @@ export default function DashboardBoardScreen() {
 
   if (isInventoryOverviewBoard(resolvedBoardKey)) {
     return <InventoryDashboardScreen />;
+  }
+
+  if (isVatOverviewBoard(resolvedBoardKey)) {
+    return <VatDashboardScreen />;
   }
 
   const title =

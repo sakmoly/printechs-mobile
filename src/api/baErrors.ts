@@ -41,6 +41,12 @@ export function isBaSchemaMismatchError(error: unknown): boolean {
   );
 }
 
+/** Reverse proxy / worker timeout — fall back to alternate APIs when possible. */
+export function isTransientGatewayError(error: unknown): boolean {
+  const status = (error as { response?: { status?: number } })?.response?.status;
+  return status === 502 || status === 503 || status === 504;
+}
+
 /** Access Profile / role denied a BA method (HTTP 403). */
 export function isBaPermissionDeniedError(error: unknown): boolean {
   const ax = error as {

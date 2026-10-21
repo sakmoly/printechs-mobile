@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -23,9 +23,14 @@ import {
   openCustomerFromRow,
   openCollectionDashboard,
 } from "../../src/utils/receivablesNavigation";
-import { filterReceivablesRankingRows } from "../../src/utils/receivablesRankingRows";
+import {
+  filterReceivablesRankingRows,
+  filterTerritoryReceivableCustomerRows,
+} from "../../src/utils/receivablesRankingRows";
 import {
   fetchReceivablesAgingBucketCustomers,
+  fetchReceivablesTerritoryCustomers,
+  RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET,
   filterAgingBucketCustomerRows,
   isReceivablesAgingBarWidgetKey,
   filterRowsForBucketDisplay,
@@ -37,6 +42,7 @@ import { resolveBoardTerritoryFilters } from "../../src/utils/dashboardTerritory
 import { RECEIVABLES } from "../../src/screens/receivables/receivablesTheme";
 import { CustomerAdvancesListPanel } from "../../src/components/receivables/CustomerAdvancesListPanel";
 import { OverdueCustomersListPanel } from "../../src/components/receivables/OverdueCustomersListPanel";
+import { TerritoryReceivablesListPanel } from "../../src/components/receivables/TerritoryReceivablesListPanel";
 import { Fonts } from "../../src/theme/typography";
 
 function rowsFromPayload(payload: DashboardWidgetDataResponse): AnalysisRow[] {
@@ -52,7 +58,8 @@ function numParam(v: string | undefined): number | undefined {
 function isRankingWidget(widgetKey: string): boolean {
   return (
     /overdue|customer|ranking|table/i.test(widgetKey) ||
-    isCustomerAdvancesWidgetKey(widgetKey)
+    isCustomerAdvancesWidgetKey(widgetKey) ||
+    widgetKey === RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET
   );
 }
 
@@ -71,6 +78,7 @@ export default function ReceivablesWidgetListScreen() {
     aging_bucket?: string;
     aging_bucket_label?: string;
     bucket_card_total?: string;
+    territory_card_total?: string;
   }>();
 
   const widgetKey = String(params.widget_key || "").trim();
@@ -79,21 +87,36 @@ export default function ReceivablesWidgetListScreen() {
   const agingBucket = String(params.aging_bucket || "").trim();
   const agingBucketLabel = String(params.aging_bucket_label || "").trim();
   const bucketCardTotal = numParam(params.bucket_card_total);
+  const territoryCardTotal = numParam(params.territory_card_total);
+  const isTerritoryCustomerList =
+    widgetKey === RECEIVABLES_TERRITORY_CUSTOMERS_WIDGET;
+  /** Territory from bar-chart drill — fixed for this screen (not global filter). */
+  const drillTerritory = useMemo(
+    () => String(params.territory || "").trim(),
+    [params.territory]
+  );
   const selectedTerritory = useDashboardFiltersStore((s) => s.selectedTerritory);
   const permissionsScope = useAuthStore((s) => s.permissions.scope);
 
   const filters = useMemo(() => {
+    if (isTerritoryCustomerList && drillTerritory) {
+      return { territory: [drillTerritory] };
+    }
     const fromStore = resolveBoardTerritoryFilters(
       selectedTerritory,
       permissionsScope
     );
     if (fromStore?.territory?.length) return fromStore;
-    const routeTerritory = String(params.territory || "").trim();
-    if (routeTerritory && routeTerritory !== "__all__") {
-      return { territory: [routeTerritory] };
+    if (drillTerritory && drillTerritory !== "__all__") {
+      return { territory: [drillTerritory] };
     }
     return fromStore;
-  }, [selectedTerritory, permissionsScope, params.territory]);
+  }, [
+    isTerritoryCustomerList,
+    drillTerritory,
+    selectedTerritory,
+    permissionsScope,
+  ]);
 
   const apiFilters = useMemo(
     () =>
@@ -107,7 +130,38 @@ export default function ReceivablesWidgetListScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const load = useCallback(
+  const loadTerritoryDrill = useCallback(
+    async (isRefresh = false) => {
+      if (!drillTerritory) {
+        setError("Missing territory");
+        setLoading(false);
+        return;
+      }
+      if (isRefresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const data = await fetchReceivablesTerritoryCustomers({
+          company,
+          territory: drillTerritory,
+          from_date: params.from_date || undefined,
+          to_date: params.to_date || undefined,
+          period: params.period || undefined,
+          limit: 200,
+        });
+        setPayload(data);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load list");
+        setPayload(null);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [drillTerritory, company, params.from_date, params.to_date, params.period]
+  );
+
+  const loadGenericList = useCallback(
     async (isRefresh = false) => {
       if (!widgetKey) {
         setError("Missing widget");
@@ -168,9 +222,21 @@ export default function ReceivablesWidgetListScreen() {
     ]
   );
 
-  React.useEffect(() => {
-    void load(false);
-  }, [load]);
+  useEffect(() => {
+    if (!widgetKey) return;
+    if (isTerritoryCustomerList) {
+      void loadTerritoryDrill(false);
+    } else {
+      void loadGenericList(false);
+    }
+  }, [
+    widgetKey,
+    isTerritoryCustomerList,
+    loadTerritoryDrill,
+    loadGenericList,
+  ]);
+
+  const load = isTerritoryCustomerList ? loadTerritoryDrill : loadGenericList;
 
   const rawRows = payload ? rowsFromPayload(payload) : [];
   const ranking =
@@ -186,12 +252,27 @@ export default function ReceivablesWidgetListScreen() {
         bucketCardTotal
       );
     }
+    if (isTerritoryCustomerList) {
+      return filterTerritoryReceivableCustomerRows(rawRows);
+    }
     return ranking
       ? filterReceivablesRankingRows(widgetKey, rawRows)
       : rawRows;
-  }, [ranking, widgetKey, rawRows, agingBucket, agingBucketLabel, bucketCardTotal]);
+  }, [
+    ranking,
+    widgetKey,
+    rawRows,
+    agingBucket,
+    agingBucketLabel,
+    bucketCardTotal,
+    isTerritoryCustomerList,
+  ]);
   const advances = isCustomerAdvancesWidgetKey(widgetKey);
   const currency = payload?.currency || payload?.meta?.currency || "SAR";
+  const territoryListMode =
+    payload?.meta?.territory_list_mode === "overdue_only"
+      ? "overdue_only"
+      : "full";
 
   const onRowPress = (row: AnalysisRow) => {
     if (ranking && advances) {
@@ -202,7 +283,19 @@ export default function ReceivablesWidgetListScreen() {
       return;
     }
     if (ranking) {
-      openCustomerFromRow(row);
+      openCustomerFromRow(row, {
+        widgetKey,
+        title,
+        company,
+        from_date: params.from_date,
+        to_date: params.to_date,
+        period: params.period,
+        drillTerritory,
+        aging_bucket: agingBucket,
+        aging_bucket_label: agingBucketLabel,
+        bucket_card_total: params.bucket_card_total,
+        territory_card_total: params.territory_card_total,
+      });
       return;
     }
     openCollectionDashboard();
@@ -211,11 +304,13 @@ export default function ReceivablesWidgetListScreen() {
   return (
     <SafeScreen aboveTabBar includeTop={false} style={styles.container}>
       <View style={[styles.header, { paddingTop: topInset }]}>
-        <ScreenHeaderNav />
+        <ScreenHeaderNav
+          color={RECEIVABLES.title}
+          buttonBackground="#f1f5f9"
+        />
         <Text style={styles.headerTitle} numberOfLines={2}>
           {title}
         </Text>
-        <View style={styles.headerSpacer} />
       </View>
 
       {error ? (
@@ -241,7 +336,23 @@ export default function ReceivablesWidgetListScreen() {
         </View>
       ) : null}
 
-      {!error && ranking && !advances ? (
+      {!error && isTerritoryCustomerList ? (
+        <View style={styles.listWrap}>
+          <TerritoryReceivablesListPanel
+            rows={rows}
+            currency={currency}
+            onRowPress={onRowPress}
+            loading={loading && !payload}
+            refreshing={refreshing}
+            onRefresh={() => load(true)}
+            contentPaddingBottom={scrollPaddingBottom}
+            territoryCardTotal={territoryCardTotal}
+            listMode={territoryListMode}
+          />
+        </View>
+      ) : null}
+
+      {!error && ranking && !advances && !isTerritoryCustomerList ? (
         <View style={styles.listWrap}>
           <OverdueCustomersListPanel
             rows={rows}
@@ -333,9 +444,10 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: Fonts.bodyBold,
     color: RECEIVABLES.title,
-    textAlign: "center",
+    textAlign: "left",
+    marginLeft: 4,
+    paddingRight: 8,
   },
-  headerSpacer: { width: 40 },
   listWrap: {
     flex: 1,
   },
